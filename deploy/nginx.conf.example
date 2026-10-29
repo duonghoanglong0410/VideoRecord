@@ -1,0 +1,104 @@
+# ==============================================================================
+# PackingProof Web — Cấu hình mẫu Nginx / Synology Reverse Proxy / Cloudflare
+# Áp dụng khi đặt Nginx hoặc Synology Application Portal Reverse Proxy phía trước
+# dịch vụ PackingProof (Frontend + API cùng origin qua HTTPS).
+#
+# LƯU Ý QUAN TRỌNG VỀ CLOUDFLARE / REVERSE PROXY:
+# 1. Giao thức tus chia nhỏ video thành từng HTTP PATCH chunk (mặc định UPLOAD_CHUNK_BYTES = 5 MiB),
+#    nhờ vậy tương thích tốt với giới hạn 100 MB/request của gói Cloudflare Free.
+#    Tuy nhiên KHÔNG đặt UPLOAD_CHUNK_BYTES vượt quá giới hạn body mỗi request của proxy/CDN!
+# 2. Bắt buộc TẮT `proxy_request_buffering off` trên đường dẫn `/api/uploads` để tusdotnet
+#    nhận stream trực tiếp và ghi nhận offset từng phần khi mạng điện thoại chập chờn.
+# 3. Cho phép đầy đủ các HTTP methods của tus: POST, HEAD, PATCH, DELETE, OPTIONS
+#    và bảo toàn các headers: Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, Location.
+# ==============================================================================
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name packing.example.com;
+
+    # Chuyển hướng toàn bộ sang HTTPS (bắt buộc để getUserMedia mở được camera trên điện thoại)
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name packing.example.com;
+
+    # Chứng chỉ TLS hợp lệ được trình duyệt Chrome Android & Safari iPhone tin cậy
+    ssl_certificate     /etc/ssl/certs/packing.example.com.fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/packing.example.com.privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Dung lượng tối đa cho mỗi HTTP request (lớn hơn MAX_UPLOAD_BYTES = 512 MiB cho cả video.import)
+    client_max_body_size 600m;
+
+    # 1. Endpoint tus Resumable Upload — Tắt request buffering & kéo dài timeout mạng di động
+    location /api/uploads {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_request_buffering off;
+        proxy_buffering off;
+
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        client_body_timeout 600s;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 2. Endpoint phát video HTTP 206 Range & tải tệp gốc — Tắt response buffering để tua nhanh tức thì
+    location ~ ^/api/videos/[^/]+/(stream|download)$ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Range             $http_range;
+        proxy_set_header If-Range          $http_if_range;
+    }
+
+    # 3. Các API nghiệp vụ, Health Checks & OpenAPI
+    location ~ ^/(api|health|openapi)/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 4. Giao diện tĩnh React PWA App Shell
+    root /var/www/packingproof/dist;
+    index index.html;
+
+    location ~ ^/(index\.html|sw\.js|manifest\.webmanifest)$ {
+        add_header Cache-Control "no-cache, must-revalidate";
+        try_files $uri =404;
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

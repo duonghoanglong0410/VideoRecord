@@ -1,0 +1,37 @@
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+appsettings.Development.local.json
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+
+# Node / Frontend / Playwright
+node_modules/
+frontend/dist/
+frontend/.vite/
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/
+playwright/.cache/
+
+# Runtime local storage, staging & keys
+.local-data/
+storage-local/
+staging-local/
+dataprotection-keys/
+*.partial
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vs/
+.idea/
+

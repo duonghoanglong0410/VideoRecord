@@ -1,0 +1,47 @@
+# ==============================================================================
+# PackingProof Web — Caddy Same-Origin HTTPS Configuration
+# - Khi chạy mạng LAN nội bộ / thử nghiệm: đặt CADDY_SITE_ADDRESS=localhost hoặc
+#   IP/hostname nội bộ kèm `tls internal` (cần cài Root CA của Caddy lên điện thoại).
+# - Khi chạy tên miền thực (ví dụ: packing.congty.vn): đặt CADDY_SITE_ADDRESS=packing.congty.vn
+#   để Caddy tự cấp chứng chỉ HTTPS Let's Encrypt được Android/iPhone tin cậy mặc định.
+# ==============================================================================
+
+{$CADDY_SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	request_body {
+		max_size 600MB
+	}
+
+	# Reverse proxy cùng origin cho API, tus resumable upload, healthcheck và OpenAPI.
+	# flush_interval -1 tắt đệm stream để tus PATCH và HTTP 206 Range video hoạt động tức thì.
+	@backend_routes {
+		path /api/* /health/* /openapi/*
+	}
+
+	handle @backend_routes {
+		reverse_proxy backend:8080 {
+			flush_interval -1
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	# Phục vụ giao diện React PWA App Shell tĩnh
+	handle {
+		root * /srv/www
+
+		@no_cache_shell {
+			path / /index.html /sw.js /manifest.webmanifest
+		}
+		header @no_cache_shell Cache-Control "no-cache, must-revalidate"
+
+		@immutable_assets {
+			path /assets/*
+		}
+		header @immutable_assets Cache-Control "public, max-age=31536000, immutable"
+
+		try_files {path} /index.html
+		file_server
+	}
+}

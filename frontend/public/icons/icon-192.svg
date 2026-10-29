@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="PackingProof Web">
+  <rect width="192" height="192" rx="36" fill="#0F172A" />
+  <path d="M96 34L148 61V115L96 142L44 115V61L96 34Z" fill="#1E293B" stroke="#0891B2" stroke-width="6" stroke-linejoin="round" />
+  <path d="M44 61L96 88L148 61" fill="none" stroke="#0891B2" stroke-width="5" stroke-linejoin="round" />
+  <path d="M96 88V142" fill="none" stroke="#0891B2" stroke-width="5" />
+  <path d="M70 47.5L122 74.5" fill="none" stroke="#38BDF8" stroke-width="4" stroke-linecap="round" />
+  <circle cx="134" cy="130" r="24" fill="#0891B2" stroke="#0F172A" stroke-width="5" />
+  <path d="M124 130L131 137L145 123" fill="none" stroke="#F8FAFC" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

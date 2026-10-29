@@ -1,0 +1,17 @@
+{
+  "name": "packingproof-web-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.2",
+    "@zxing/library": "0.23.0",
+    "pg": "^8.16.0",
+    "typescript": "^5.8.3"
+  }
+}

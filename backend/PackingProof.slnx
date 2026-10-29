@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PackingProof.Api/PackingProof.Api.csproj" />
+    <Project Path="src/PackingProof.Core/PackingProof.Core.csproj" />
+    <Project Path="src/PackingProof.Infrastructure/PackingProof.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PackingProof.IntegrationTests/PackingProof.IntegrationTests.csproj" />
+    <Project Path="tests/PackingProof.UnitTests/PackingProof.UnitTests.csproj" />
+  </Folder>
+</Solution>

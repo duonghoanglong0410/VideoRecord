@@ -1,0 +1,122 @@
+# ==============================================================================
+# PackingProof Web — Docker Compose (Local / Linux Server / Synology Container Manager)
+# Kiểm tra cú pháp:
+#   docker compose --env-file .env.example -f deploy/docker-compose.yml config
+# Khởi chạy thực tế (sau khi tạo file .env từ .env.example):
+#   docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
+# ==============================================================================
+
+name: packingproof
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-packingproof}
+      POSTGRES_USER: ${POSTGRES_USER:-packingproof}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_DB_PASSWORD}
+      TZ: Asia/Ho_Chi_Minh
+    # QUAN TRỌNG: PGDATA BẮT BUỘC đặt trên volume đĩa cục bộ (SSD/HDD local của host hoặc
+    # volume nội bộ của Synology), TUYỆT ĐỐI KHÔNG đặt PGDATA trên một SMB/CIFS share mount từ máy khác
+    # vì cơ chế khóa file (fsync/fcntl) qua SMB gây hỏng dữ liệu PostgreSQL!
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-packingproof} -d $${POSTGRES_DB:-packingproof}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - packingproof_internal
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      TZ: Asia/Ho_Chi_Minh
+      APP_PUBLIC_ORIGIN: ${APP_PUBLIC_ORIGIN:-https://localhost}
+      DATABASE_CONNECTION: Host=postgres;Port=5432;Database=${POSTGRES_DB:-packingproof};Username=${POSTGRES_USER:-packingproof};Password=${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_DB_PASSWORD}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-PackingProof.Auth}
+      DATA_PROTECTION_KEYS_PATH: /var/lib/packingproof/dataprotection-keys
+      # Chế độ lưu trữ: LocalDevelopment (thử nghiệm) | SynologyMounted (vận hành NAS thật, kiểm tra .packingproof-storage-id)
+      STORAGE_MODE: ${STORAGE_MODE:-LocalDevelopment}
+      NAS_ROOT_PATH: /mnt/nas/packingproof
+      STORAGE_ID: ${STORAGE_ID:-packingproof-local-dev-storage-01}
+      STAGING_ROOT_PATH: /var/lib/packingproof/staging
+      MAX_RECORDING_SECONDS: ${MAX_RECORDING_SECONDS:-600}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-536870912}
+      MAX_LOCAL_PENDING_RECORDINGS: ${MAX_LOCAL_PENDING_RECORDINGS:-3}
+      UPLOAD_CHUNK_BYTES: ${UPLOAD_CHUNK_BYTES:-5242880}
+      STAGING_MAX_BYTES: ${STAGING_MAX_BYTES:-10737418240}
+      # Trên NAS Synology CPU giới hạn, nên giữ PROCESSING_CONCURRENCY=1 để chuyển mã FFmpeg không nghẽn hệ thống
+      PROCESSING_CONCURRENCY: ${PROCESSING_CONCURRENCY:-1}
+      ENABLE_AUDIO_RECORDING: ${ENABLE_AUDIO_RECORDING:-false}
+      RETENTION_ENABLED: ${RETENTION_ENABLED:-false}
+      RETENTION_DAYS: ${RETENTION_DAYS:-90}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      FFPROBE_PATH: ffprobe
+      FFMPEG_PATH: ffmpeg
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@example.local}
+    volumes:
+      - staging_data:/var/lib/packingproof/staging
+      - dataprotection_keys:/var/lib/packingproof/dataprotection-keys
+      # Mặc định dùng named volume để chạy thử nghiệm cô lập.
+      # Khi triển khai SynologyMounted thật, thay dòng `nas_storage:/mnt/nas/packingproof` bên dưới bằng bind mount:
+      #   - /volume1/PackingVideos:/mnt/nas/packingproof        (nếu chạy trong Synology Container Manager)
+      #   - /mnt/synology-packing:/mnt/nas/packingproof         (nếu chạy trên Linux server đã mount SMB/NFS)
+      - nas_storage:/mnt/nas/packingproof
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - packingproof_internal
+
+  proxy:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-localhost}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - packingproof_internal
+
+volumes:
+  pgdata:
+  staging_data:
+  dataprotection_keys:
+  nas_storage:
+  caddy_data:
+  caddy_config:
+
+networks:
+  packingproof_internal:
+    driver: bridge

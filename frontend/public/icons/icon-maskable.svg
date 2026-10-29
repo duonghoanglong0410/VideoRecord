@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="PackingProof Web Maskable">
+  <rect width="512" height="512" fill="#0F172A" />
+  <path d="M256 124L370 183V301L256 360L142 301V183L256 124Z" fill="#1E293B" stroke="#0891B2" stroke-width="14" stroke-linejoin="round" />
+  <path d="M142 183L256 242L370 183" fill="none" stroke="#0891B2" stroke-width="12" stroke-linejoin="round" />
+  <path d="M256 242V360" fill="none" stroke="#0891B2" stroke-width="12" />
+  <path d="M199 153.5L313 212.5" fill="none" stroke="#38BDF8" stroke-width="10" stroke-linecap="round" />
+  <circle cx="344" cy="336" r="52" fill="#0891B2" stroke="#0F172A" stroke-width="12" />
+  <path d="M322 336L337 351L368 320" fill="none" stroke="#F8FAFC" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
