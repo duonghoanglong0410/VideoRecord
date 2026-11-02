@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
+import { Eye, EyeOff, KeyRound, LogIn, PackageCheck, ShieldCheck } from 'lucide-react';
 import { ApiRequestError } from '../../app/apiClient';
 import { useAuth } from '../../app/authStore';
 import { StorageModeBanner } from '../../app/StorageModeBanner';
@@ -17,6 +18,7 @@ export function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
 
   const [requiresTwoFactor, setRequiresTwoFactor] = useState(false);
@@ -84,7 +86,7 @@ export function LoginPage() {
       if (err instanceof ApiRequestError) {
         setErrorMessage(err.message);
       } else {
-        setErrorMessage('Xác thực hai lớp thất bại. Vui lòng thử lại.');
+        setErrorMessage('Mã xác thực chưa đúng. Vui lòng kiểm tra lại.');
       }
     } finally {
       setIsSubmitting(false);
@@ -98,14 +100,21 @@ export function LoginPage() {
       <div className="auth-container">
         <div className="auth-card">
           <div className="brand-header">
-            <span className="brand-badge">PackingProof Web</span>
+            <span className="brand-badge">
+              {requiresTwoFactor ? (
+                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <PackageCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              PackingProof Web
+            </span>
             <h1 className="brand-title">
               {requiresTwoFactor ? 'Xác thực hai lớp (2FA)' : 'Đăng nhập hệ thống'}
             </h1>
             <p className="brand-subtitle">
               {requiresTwoFactor
-                ? 'Nhập mã xác thực từ ứng dụng Authenticator hoặc mã khôi phục dự phòng.'
-                : 'Quét mã vận đơn, quay đóng gói và lưu trữ video đối soát.'}
+                ? 'Nhập mã từ ứng dụng bảo mật trên điện thoại hoặc dùng mã khôi phục dự phòng.'
+                : 'Hệ thống quay và tra cứu video đóng gói đơn hàng.'}
             </p>
           </div>
 
@@ -143,28 +152,41 @@ export function LoginPage() {
                 <label className="form-label" htmlFor="login-password">
                   Mật khẩu
                 </label>
-                <input
-                  id="login-password"
-                  type="password"
-                  className="form-input"
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Nhập mật khẩu"
-                />
+                <div className="relative">
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    className="form-input pr-12"
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Nhập mật khẩu của bạn"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute top-1/2 right-1 flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
               </div>
 
-              <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <input
-                  id="login-remember"
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  style={{ width: 20, height: 20 }}
-                />
-                <label htmlFor="login-remember" style={{ fontSize: '0.92rem' }}>
-                  Duy trì phiên đăng nhập trên thiết bị này
+              <div className="form-group">
+                <label htmlFor="login-remember" className="checkbox-inline-row">
+                  <input
+                    id="login-remember"
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                  />
+                  <span>Ghi nhớ đăng nhập trên thiết bị này</span>
                 </label>
               </div>
 
@@ -173,13 +195,9 @@ export function LoginPage() {
                 className="btn btn-primary btn-full"
                 disabled={isSubmitting}
               >
+                <LogIn className="h-4 w-4" aria-hidden="true" />
                 {isSubmitting ? 'Đang đăng nhập...' : 'Đăng nhập'}
               </button>
-
-              <div className="auth-links">
-                <Link to="/register">Chưa có tài khoản? Đăng ký chờ duyệt</Link>
-                <Link to="/reset-password">Quên hoặc đặt lại mật khẩu</Link>
-              </div>
             </form>
           ) : (
             <form onSubmit={(e) => void handleTwoFactorSubmit(e)}>
@@ -187,27 +205,28 @@ export function LoginPage() {
                 <label className="form-label" htmlFor="totp-code">
                   {useRecoveryCode
                     ? 'Mã khôi phục dự phòng một lần'
-                    : 'Mã xác thực 6 chữ số (TOTP)'}
+                    : 'Mã xác thực 6 chữ số'}
                 </label>
                 <input
                   id="totp-code"
                   type="text"
                   inputMode={useRecoveryCode ? 'text' : 'numeric'}
                   autoComplete="one-time-code"
-                  className="form-input"
+                  className="form-input font-mono text-center text-lg tracking-widest"
                   required
                   value={twoFactorCode}
                   onChange={(e) => setTwoFactorCode(e.target.value)}
-                  placeholder={useRecoveryCode ? 'Ví dụ: ABCD-EFGH' : 'Nhập 6 chữ số'}
+                  placeholder={useRecoveryCode ? 'ABCD-EFGH' : '000000'}
                 />
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="flex flex-col gap-2.5">
                 <button
                   type="submit"
                   className="btn btn-primary btn-full"
                   disabled={isSubmitting}
                 >
+                  <KeyRound className="h-4 w-4" aria-hidden="true" />
                   {isSubmitting ? 'Đang xác minh...' : 'Xác minh mã 2FA'}
                 </button>
 
@@ -245,4 +264,3 @@ export function LoginPage() {
     </div>
   );
 }
-

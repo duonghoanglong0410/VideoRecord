@@ -7,18 +7,25 @@ import {
   useState
 } from 'react';
 import {
+  AlertTriangle,
+  Flashlight,
+  FlashlightOff,
+  Loader2,
+  RefreshCw,
+  ScanBarcode
+} from 'lucide-react';
+import {
   BarcodeFormat,
   BrowserCodeReader,
   BrowserMultiFormatReader,
   type IScannerControls
 } from '@zxing/browser';
+import { DecodeHintType } from '@zxing/library';
 import {
   checkTrackTorchCapability,
-  listVideoInputDevices,
   setTrackTorch,
   stopMediaStreamTracks,
-  translateCameraError,
-  type VideoInputDeviceOption
+  translateCameraError
 } from './mediaCapabilities';
 import type { BarcodeFormatHint } from './recordingApi';
 
@@ -63,44 +70,221 @@ function mapZxingFormatHint(format: BarcodeFormat | undefined): BarcodeFormatHin
   return 'OneDimensional';
 }
 
+interface DetectedBarcodeLike {
+  rawValue?: string;
+  format?: string;
+}
+
+interface NativeBarcodeDetectorLike {
+  detect: (source: ImageBitmapSource) => Promise<DetectedBarcodeLike[]>;
+}
+
+interface NativeBarcodeDetectorCtor {
+  new (options?: { formats?: string[] }): NativeBarcodeDetectorLike;
+  getSupportedFormats?: () => Promise<string[]>;
+}
+
+const DESIRED_NATIVE_BARCODE_FORMATS = [
+  'qr_code',
+  'code_128',
+  'code_39',
+  'ean_13',
+  'ean_8',
+  'itf',
+  'codabar',
+  'upc_a',
+  'upc_e'
+] as const;
+
+const SHIPPING_ZXING_FORMATS: BarcodeFormat[] = [
+  BarcodeFormat.QR_CODE,
+  BarcodeFormat.CODE_128,
+  BarcodeFormat.CODE_39,
+  BarcodeFormat.EAN_13,
+  BarcodeFormat.EAN_8,
+  BarcodeFormat.ITF,
+  BarcodeFormat.CODABAR,
+  BarcodeFormat.UPC_A,
+  BarcodeFormat.UPC_E
+];
+
+async function openScannerCameraStream(deviceId?: string): Promise<MediaStream> {
+  const baseDevice: MediaTrackConstraints = deviceId
+    ? { deviceId: { exact: deviceId } }
+    : { facingMode: { ideal: 'environment' } };
+
+  const constraintAttempts: MediaTrackConstraints[] = [
+    {
+      ...baseDevice,
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30, max: 30 }
+    },
+    baseDevice
+  ];
+
+  let lastErr: unknown = null;
+  for (const videoConstraint of constraintAttempts) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: videoConstraint
+      });
+      return stream;
+    } catch (err) {
+      lastErr = err;
+      const errName = (err as { name?: string })?.name;
+      if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+        break;
+      }
+    }
+  }
+
+  throw lastErr ?? new Error('Không thể khởi tạo camera quét mã vận đơn.');
+}
+
+async function tryCreateNativeBarcodeDetector(): Promise<NativeBarcodeDetectorLike | null> {
+  const ctor = (
+    globalThis as unknown as { BarcodeDetector?: NativeBarcodeDetectorCtor }
+  ).BarcodeDetector;
+  if (typeof ctor !== 'function') {
+    return null;
+  }
+
+  try {
+    if (typeof ctor.getSupportedFormats === 'function') {
+      const supported = await ctor.getSupportedFormats();
+      const usable = DESIRED_NATIVE_BARCODE_FORMATS.filter((f) =>
+        supported.includes(f)
+      );
+      // Require both 1D Code128 and 2D QR support before choosing native detector
+      if (!usable.includes('code_128') || !usable.includes('qr_code')) {
+        return null;
+      }
+      return new ctor({ formats: usable });
+    }
+    return new ctor({ formats: [...DESIRED_NATIVE_BARCODE_FORMATS] });
+  } catch {
+    return null;
+  }
+}
+
 export function createDefaultZxingScannerAdapter(): ScannerAdapter {
   return {
     async start({ videoElement, deviceId, onDecoded }) {
-      const reader = new BrowserMultiFormatReader();
-      const constraints: MediaStreamConstraints = {
-        audio: false,
-        video: deviceId
-          ? {
-              deviceId: { exact: deviceId },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            }
-          : {
-              facingMode: { ideal: 'environment' },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            }
-      };
+      // 1. Fast-Path for Android Chrome (`Chrome/83+`): Native C++ off-main-thread `BarcodeDetector`
+      //    (Google Play Services ML Kit). Runs directly on the GPU `HTMLVideoElement` with ZERO
+      //    `<canvas>` allocation, ZERO `getImageData` GPU->CPU stall, and 0% JS main-thread lag!
+      const nativeDetector = await tryCreateNativeBarcodeDetector();
+      if (nativeDetector) {
+        const stream = await openScannerCameraStream(deviceId);
+        videoElement.srcObject = stream;
+        await videoElement.play().catch(() => undefined);
 
-      const controls: IScannerControls = await reader.decodeFromConstraints(
-        constraints,
-        videoElement,
-        (result) => {
-          if (result) {
-            const rawText = result.getText();
-            const format = result.getBarcodeFormat();
-            onDecoded({
-              rawText,
-              formatHint: mapZxingFormatHint(format)
-            });
+        let stopped = false;
+        let timerId: ReturnType<typeof setTimeout> | null = null;
+
+        const scheduleNext = (delayMs: number) => {
+          if (stopped) {
+            return;
           }
+          timerId = setTimeout(() => {
+            void runNativeScanTick();
+          }, delayMs);
+        };
+
+        const runNativeScanTick = async () => {
+          if (stopped) {
+            return;
+          }
+          try {
+            if (
+              videoElement.readyState >= 2 &&
+              videoElement.videoWidth > 0 &&
+              videoElement.videoHeight > 0
+            ) {
+              const results = await nativeDetector.detect(videoElement);
+              if (!stopped && Array.isArray(results) && results.length > 0) {
+                for (const hit of results) {
+                  const rawText = hit.rawValue?.trim() ?? '';
+                  if (rawText) {
+                    const fmt = (hit.format ?? '').toLowerCase();
+                    onDecoded({
+                      rawText,
+                      formatHint: fmt === 'qr_code' ? 'QrCode' : 'OneDimensional'
+                    });
+                    scheduleNext(450);
+                    return;
+                  }
+                }
+              }
+            }
+          } catch {
+            // Transient frame-not-ready error; retry cleanly on next interval
+          }
+          scheduleNext(200);
+        };
+
+        scheduleNext(120);
+
+        return {
+          stream,
+          stop: () => {
+            stopped = true;
+            if (timerId !== null) {
+              clearTimeout(timerId);
+              timerId = null;
+            }
+            stopMediaStreamTracks(stream);
+            if (videoElement.srcObject instanceof MediaStream) {
+              stopMediaStreamTracks(videoElement.srcObject);
+            }
+            videoElement.srcObject = null;
+          }
+        };
+      }
+
+      // 2. Optimized Fallback (iOS Safari / Desktop Firefox):
+      //    Restrict ZXing strictly to 1D shipping barcodes + QR (skipping heavy Aztec/PDF417/MaxiCode/DataMatrix)
+      //    and explicitly clear `BrowserCodeReader.releaseAllStreams()` on stop so `streamTracker` never leaks!
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, SHIPPING_ZXING_FORMATS);
+      const reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 400,
+        delayBetweenScanSuccess: 500
+      });
+      const stream = await openScannerCameraStream(deviceId);
+
+      let controls: IScannerControls;
+      try {
+        controls = await reader.decodeFromStream(
+          stream,
+          videoElement,
+          (result) => {
+            if (result) {
+              const rawText = result.getText();
+              const format = result.getBarcodeFormat();
+              onDecoded({
+                rawText,
+                formatHint: mapZxingFormatHint(format)
+              });
+            }
+          }
+        );
+      } catch (err) {
+        stopMediaStreamTracks(stream);
+        try {
+          BrowserCodeReader.releaseAllStreams();
+        } catch {
+          // Ignore static cleanup error
         }
-      );
+        throw err;
+      }
 
       const attachedStream =
         videoElement.srcObject instanceof MediaStream
           ? videoElement.srcObject
-          : null;
+          : stream;
 
       return {
         stream: attachedStream,
@@ -110,6 +294,12 @@ export function createDefaultZxingScannerAdapter(): ScannerAdapter {
           } catch {
             // Ignore scanner stop race
           }
+          try {
+            BrowserCodeReader.releaseAllStreams();
+          } catch {
+            // Ignore static tracker cleanup error
+          }
+          stopMediaStreamTracks(stream);
           stopMediaStreamTracks(attachedStream);
           if (videoElement.srcObject instanceof MediaStream) {
             stopMediaStreamTracks(videoElement.srcObject);
@@ -130,7 +320,6 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
     {
       enabled,
       selectedDeviceId,
-      onSelectedDeviceIdChange,
       onDecoded,
       scannerAdapter
     },
@@ -142,7 +331,6 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
     const onDecodedRef = useRef(onDecoded);
     onDecodedRef.current = onDecoded;
 
-    const [devices, setDevices] = useState<VideoInputDeviceOption[]>([]);
     const [isStarting, setIsStarting] = useState<boolean>(false);
     const [scannerRunning, setScannerRunning] = useState<boolean>(false);
     const [cameraError, setCameraError] = useState<string | null>(null);
@@ -235,11 +423,6 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
           setScannerRunning(true);
           setTorchSupported(checkTrackTorchCapability(resolvedStream));
           setTorchEnabled(false);
-
-          const availableDevices = await listVideoInputDevices();
-          if (!cancelled) {
-            setDevices(availableDevices);
-          }
         } catch (err) {
           if (!cancelled) {
             setScannerRunning(false);
@@ -265,39 +448,37 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
     }, [torchEnabled]);
 
     return (
-      <div className="scanner-panel" data-testid="scanner-view">
-        <div className="scanner-toolbar">
-          {devices.length > 1 && (
-            <div className="scanner-camera-select">
-              <label htmlFor="scanner-camera-dropdown" className="form-label" style={{ marginBottom: 4 }}>
-                Chọn camera
-              </label>
-              <select
-                id="scanner-camera-dropdown"
-                className="form-input"
-                value={selectedDeviceId}
-                onChange={(e) => onSelectedDeviceIdChange(e.target.value)}
-              >
-                <option value="">Camera sau (Tự động ưu tiên)</option>
-                {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+      <div
+        className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-zinc-100 shadow-lg sm:p-4"
+        data-testid="scanner-view"
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 text-xs font-semibold tracking-wide text-zinc-300 uppercase">
+            <ScanBarcode className="h-4 w-4 text-blue-400" aria-hidden="true" />
+            <span>Quét tem vận đơn</span>
+          </div>
 
-          {torchSupported && (
-            <button
-              type="button"
-              className={`btn ${torchEnabled ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => void handleToggleTorch()}
-              aria-pressed={torchEnabled}
-            >
-              {torchEnabled ? 'Tắt đèn Flash' : 'Bật đèn Flash'}
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {torchSupported && (
+              <button
+                type="button"
+                className={`inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition-colors ${
+                  torchEnabled
+                    ? 'border-amber-400/60 bg-amber-400 text-zinc-950 hover:bg-amber-300'
+                    : 'border-zinc-700 bg-zinc-900 text-zinc-100 hover:bg-zinc-800'
+                }`}
+                onClick={() => void handleToggleTorch()}
+                aria-pressed={torchEnabled}
+              >
+                {torchEnabled ? (
+                  <FlashlightOff className="h-4 w-4 shrink-0" aria-hidden="true" />
+                ) : (
+                  <Flashlight className="h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
+                <span>{torchEnabled ? 'Tắt đèn Flash' : 'Bật đèn Flash'}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="camera-viewport">
@@ -307,6 +488,8 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
             muted
             playsInline
             autoPlay
+            disablePictureInPicture
+            disableRemotePlayback
             aria-label="Khung ngắm quét mã vận đơn"
           />
 
@@ -314,28 +497,37 @@ export const ScannerView = forwardRef<ScannerViewHandle, ScannerViewProps>(
             <div className="scanner-reticle" aria-hidden="true">
               <div className="scanner-reticle-box" />
               <span className="scanner-reticle-hint">
-                Đưa mã vạch (1D) hoặc mã QR trên tem đơn vào khung ngắm
+                Đưa mã vạch hoặc mã QR trên tem đơn vào khung ngắm
               </span>
             </div>
           )}
 
           {isStarting && (
             <div className="camera-overlay-msg" role="status">
-              Đang mở camera quét mã...
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                <span>Đang mở camera quét mã...</span>
+              </span>
             </div>
           )}
         </div>
 
         {cameraError && (
-          <div className="alert alert-error" role="alert" style={{ marginTop: 12, marginBottom: 0 }}>
-            <div>{cameraError}</div>
+          <div
+            className="mt-3 rounded-xl border border-red-500/40 bg-red-950/70 p-3.5 text-sm text-red-100"
+            role="alert"
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
+              <div className="flex-1">{cameraError}</div>
+            </div>
             <button
               type="button"
-              className="btn btn-outline"
-              style={{ marginTop: 10 }}
+              className="mt-3 inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-red-400/40 bg-red-900/50 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-900/80"
               onClick={() => setRestartNonce((n) => n + 1)}
             >
-              Thử mở lại camera
+              <RefreshCw className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>Thử mở lại camera</span>
             </button>
           </div>
         )}

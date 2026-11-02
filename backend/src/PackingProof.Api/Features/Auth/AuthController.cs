@@ -4,12 +4,14 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PackingProof.Api.Common;
 using PackingProof.Core.Abstractions;
 using PackingProof.Core.Entities;
 using PackingProof.Core.Enums;
 using PackingProof.Infrastructure.Configuration;
 using PackingProof.Infrastructure.Notifications;
+using PackingProof.Infrastructure.Persistence;
 
 namespace PackingProof.Api.Features.Auth;
 
@@ -17,6 +19,7 @@ namespace PackingProof.Api.Features.Auth;
 [Route("api/auth")]
 public sealed class AuthController : ControllerBase
 {
+    private readonly PackingProofDbContext _db;
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IScopeAuthorizationService _scopeAuth;
@@ -26,6 +29,7 @@ public sealed class AuthController : ControllerBase
     private readonly PackingProofOptions _options;
 
     public AuthController(
+        PackingProofDbContext db,
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         IScopeAuthorizationService scopeAuth,
@@ -34,6 +38,7 @@ public sealed class AuthController : ControllerBase
         IPasswordResetEmailSender emailSender,
         PackingProofOptions options)
     {
+        _db = db;
         _userManager = userManager;
         _signInManager = signInManager;
         _scopeAuth = scopeAuth;
@@ -400,6 +405,202 @@ public sealed class AuthController : ControllerBase
         var csrfToken = _antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
         var response = await BuildAuthMeResponseAsync(user, csrfToken, ct);
         return Ok(response);
+    }
+
+    [HttpPut("profile")]
+    [Authorize]
+    public async Task<IActionResult> UpdateOwnProfile(
+        [FromBody] UpdateOwnProfileRequest request,
+        CancellationToken ct)
+    {
+        var userId = HttpContext.GetRequiredUserId();
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null)
+        {
+            return Unauthorized(new ApiErrorResponse(
+                "UNAUTHORIZED",
+                "Không tìm thấy thông tin người dùng."));
+        }
+
+        var fullName = request.FullName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(fullName) || fullName.Length > 200)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập họ và tên hợp lệ (tối đa 200 ký tự)."));
+        }
+
+        var access = await _scopeAuth.GetEffectiveAccessAsync(user.Id, ct);
+        Guid? resolvedShopId = request.DefaultShopId;
+        Guid? resolvedWarehouseId = request.DefaultWarehouseId;
+
+        if (resolvedWarehouseId.HasValue)
+        {
+            var wh = await _db.Warehouses
+                .AsNoTracking()
+                .Include(w => w.Shop)
+                .FirstOrDefaultAsync(w => w.Id == resolvedWarehouseId.Value && w.IsActive && w.Shop.IsActive, ct);
+
+            if (wh is null)
+            {
+                return BadRequest(new ApiErrorResponse(
+                    "WAREHOUSE_NOT_FOUND",
+                    "Kho mặc định được chọn không tồn tại hoặc đang tạm ngưng."));
+            }
+
+            if (resolvedShopId.HasValue && resolvedShopId.Value != wh.ShopId)
+            {
+                return BadRequest(new ApiErrorResponse(
+                    "WAREHOUSE_SHOP_MISMATCH",
+                    "Kho mặc định không thuộc Shop đã chọn."));
+            }
+
+            resolvedShopId = wh.ShopId;
+
+            if (!access.IsSuperAdmin)
+            {
+                var canAccessWh = access.Grants.Any(g =>
+                    ((g.ScopeType == ScopeType.Shop || (g.ScopeType == ScopeType.Own && !g.WarehouseId.HasValue)) &&
+                     g.ShopId == wh.ShopId) ||
+                    g.WarehouseId == wh.Id);
+
+                if (!canAccessWh)
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(
+                        "OUT_OF_SCOPE_WAREHOUSE",
+                        "Bạn không thuộc phạm vi làm việc của Kho đã chọn."));
+                }
+            }
+        }
+        else if (resolvedShopId.HasValue)
+        {
+            var shopExists = await _db.Shops
+                .AsNoTracking()
+                .AnyAsync(s => s.Id == resolvedShopId.Value && s.IsActive, ct);
+
+            if (!shopExists)
+            {
+                return BadRequest(new ApiErrorResponse(
+                    "SHOP_NOT_FOUND",
+                    "Shop mặc định được chọn không tồn tại hoặc đang tạm ngưng."));
+            }
+
+            if (!access.IsSuperAdmin)
+            {
+                var canAccessShop = access.Grants.Any(g => g.ShopId == resolvedShopId.Value);
+                if (!canAccessShop)
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(
+                        "OUT_OF_SCOPE_SHOP",
+                        "Bạn không thuộc phạm vi làm việc của Shop đã chọn."));
+                }
+            }
+        }
+
+        user.FullName = fullName;
+        user.DefaultShopId = resolvedShopId;
+        user.DefaultWarehouseId = resolvedWarehouseId;
+
+        await _userManager.UpdateAsync(user);
+
+        await _auditLogger.AppendAsync(new AuditEntryRequest(
+            Action: "auth.profile_updated",
+            EntityType: "User",
+            EntityId: user.Id.ToString(),
+            Outcome: AuditOutcome.Success,
+            ActorUserId: user.Id,
+            ActorEmail: user.Email,
+            ShopId: user.DefaultShopId,
+            WarehouseId: user.DefaultWarehouseId,
+            IpAddress: HttpContext.GetClientIp(),
+            UserAgent: HttpContext.GetUserAgent(),
+            Metadata: new
+            {
+                fullName = user.FullName,
+                defaultShopId = user.DefaultShopId,
+                defaultWarehouseId = user.DefaultWarehouseId
+            }), ct);
+
+        var csrfToken = _antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
+        var me = await BuildAuthMeResponseAsync(user, csrfToken, ct);
+        return Ok(me);
+    }
+
+    [HttpPost("change-password")]
+    [Authorize]
+    public async Task<IActionResult> ChangeOwnPassword(
+        [FromBody] ChangeOwnPasswordRequest request,
+        CancellationToken ct)
+    {
+        var userId = HttpContext.GetRequiredUserId();
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null)
+        {
+            return Unauthorized(new ApiErrorResponse(
+                "UNAUTHORIZED",
+                "Không tìm thấy thông tin người dùng."));
+        }
+
+        if (string.IsNullOrEmpty(request.CurrentPassword) || string.IsNullOrEmpty(request.NewPassword))
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập đầy đủ mật khẩu hiện tại và mật khẩu mới."));
+        }
+
+        if (request.NewPassword != request.ConfirmPassword)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "PASSWORD_CONFIRM_MISMATCH",
+                "Mật khẩu mới và xác nhận mật khẩu không khớp."));
+        }
+
+        var changeResult = await _userManager.ChangePasswordAsync(
+            user,
+            request.CurrentPassword,
+            request.NewPassword);
+
+        if (!changeResult.Succeeded)
+        {
+            await _auditLogger.AppendAsync(new AuditEntryRequest(
+                Action: "auth.change_password",
+                EntityType: "User",
+                EntityId: user.Id.ToString(),
+                Outcome: AuditOutcome.Failed,
+                ActorUserId: user.Id,
+                ActorEmail: user.Email,
+                IpAddress: HttpContext.GetClientIp(),
+                UserAgent: HttpContext.GetUserAgent()), ct);
+
+            var vnDetails = IdentityErrorTranslator.ToVietnamese(changeResult.Errors);
+            return BadRequest(new ApiErrorResponse(
+                "CHANGE_PASSWORD_FAILED",
+                vnDetails.FirstOrDefault() ?? "Không thể đổi mật khẩu. Vui lòng kiểm tra lại mật khẩu hiện tại.",
+                vnDetails));
+        }
+
+        user.ForcePasswordReset = false;
+        await _userManager.UpdateAsync(user);
+        await _userManager.UpdateSecurityStampAsync(user);
+        await _signInManager.RefreshSignInAsync(user);
+        HttpContext.User = await _signInManager.CreateUserPrincipalAsync(user);
+        var csrfToken = _antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
+
+        await _auditLogger.AppendAsync(new AuditEntryRequest(
+            Action: "auth.change_password",
+            EntityType: "User",
+            EntityId: user.Id.ToString(),
+            Outcome: AuditOutcome.Success,
+            ActorUserId: user.Id,
+            ActorEmail: user.Email,
+            IpAddress: HttpContext.GetClientIp(),
+            UserAgent: HttpContext.GetUserAgent()), ct);
+
+        return Ok(new
+        {
+            message = "Đổi mật khẩu thành công. Các thiết bị đăng nhập cũ đã được tự động đăng xuất để bảo mật.",
+            csrfToken
+        });
     }
 
     [HttpPost("forgot-password")]

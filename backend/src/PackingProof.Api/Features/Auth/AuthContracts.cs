@@ -40,6 +40,16 @@ public sealed record ResetPasswordRequest(
     string NewPassword,
     string ConfirmPassword);
 
+public sealed record UpdateOwnProfileRequest(
+    string FullName,
+    Guid? DefaultShopId = null,
+    Guid? DefaultWarehouseId = null);
+
+public sealed record ChangeOwnPasswordRequest(
+    string CurrentPassword,
+    string NewPassword,
+    string ConfirmPassword);
+
 public sealed record MfaSetupResponse(
     string SharedKey,
     string AuthenticatorUri);

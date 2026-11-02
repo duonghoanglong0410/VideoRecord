@@ -58,7 +58,8 @@ export interface LocalRecordingChunk {
   recordingId: string;
   seq: number;
   ownerUserId: string;
-  data: ArrayBuffer;
+  data?: ArrayBuffer;
+  blob?: Blob;
   byteLength: number;
   createdAt: string;
 }
@@ -606,6 +607,36 @@ function isArrayBufferLike(value: unknown): value is ArrayBuffer {
   );
 }
 
+function isBlobLike(value: unknown): value is Blob {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  if (typeof Blob !== 'undefined' && value instanceof Blob) {
+    return true;
+  }
+  const maybeBlob = value as { size?: unknown; slice?: unknown };
+  return typeof maybeBlob.size === 'number' && typeof maybeBlob.slice === 'function';
+}
+
+export function getChunkPayloadByteLength(
+  chunk: Pick<LocalRecordingChunk, 'blob' | 'data'> | null | undefined
+): number {
+  if (!chunk) {
+    return 0;
+  }
+  if (isBlobLike(chunk.blob)) {
+    return chunk.blob.size;
+  }
+  if (isArrayBufferLike(chunk.data)) {
+    return chunk.data.byteLength;
+  }
+  return 0;
+}
+
+function hasValidChunkPayload(chunk: LocalRecordingChunk): boolean {
+  return isBlobLike(chunk.blob) || isArrayBufferLike(chunk.data);
+}
+
 /**
  * Verifies whether all expected chunks and bytes of a local recording still exist in IndexedDB.
  * Never claims unrecoverable bytes exist if browser data was partially or completely wiped.
@@ -652,10 +683,10 @@ export async function verifyLocalRecordingIntegrity(
   let isContiguous = true;
 
   for (let i = 0; i < chunks.length; i += 1) {
-    if (chunks[i].seq !== i || !isArrayBufferLike(chunks[i].data)) {
+    if (chunks[i].seq !== i || !hasValidChunkPayload(chunks[i])) {
       isContiguous = false;
     }
-    const len = chunks[i].data?.byteLength ?? 0;
+    const len = getChunkPayloadByteLength(chunks[i]);
     if (len !== chunks[i].byteLength) {
       isContiguous = false;
     }
@@ -744,7 +775,7 @@ export async function reconcileCrashedSessions(
       if (chunks[i].seq !== i) {
         break;
       }
-      const len = chunks[i].data?.byteLength ?? 0;
+      const len = getChunkPayloadByteLength(chunks[i]);
       if (len <= 0) {
         break;
       }

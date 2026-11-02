@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { KeyRound, Mail } from 'lucide-react';
 import { apiRequest, ApiRequestError } from '../../app/apiClient';
 import { useAuth } from '../../app/authStore';
 import { StorageModeBanner } from '../../app/StorageModeBanner';
@@ -54,7 +55,7 @@ export function ResetPasswordPage() {
     setSuccessMessage(null);
 
     if (newPassword !== confirmPassword) {
-      setErrorMessage('Mật khẩu xác nhận không khớp.');
+      setErrorMessage('Mật khẩu nhập lại chưa khớp.');
       return;
     }
 
@@ -78,7 +79,7 @@ export function ResetPasswordPage() {
       if (err instanceof ApiRequestError) {
         setErrorMessage(err.message);
       } else {
-        setErrorMessage('Đặt lại mật khẩu thất bại.');
+        setErrorMessage('Đặt lại mật khẩu chưa thành công.');
       }
     } finally {
       setIsSubmitting(false);
@@ -92,17 +93,20 @@ export function ResetPasswordPage() {
       <div className="auth-container">
         <div className="auth-card">
           <div className="brand-header">
-            <span className="brand-badge">PackingProof Web</span>
+            <span className="brand-badge">
+              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+              PackingProof Web
+            </span>
             <h1 className="brand-title">Đặt lại mật khẩu</h1>
             <p className="brand-subtitle">
-              Sử dụng email khôi phục hoặc nhập mã đặt lại mật khẩu một lần do Quản trị viên cấp.
+              Nhận mã qua Email hoặc nhập mã khôi phục do Quản lý cấp trực tiếp.
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+          <div className="segmented-tabs mb-4 grid w-full grid-cols-2">
             <button
               type="button"
-              className={`btn btn-full ${mode === 'request' ? 'btn-navy' : 'btn-outline'}`}
+              className={`segmented-tab ${mode === 'request' ? 'active' : ''}`}
               onClick={() => {
                 setMode('request');
                 setErrorMessage(null);
@@ -113,14 +117,14 @@ export function ResetPasswordPage() {
             </button>
             <button
               type="button"
-              className={`btn btn-full ${mode === 'confirm' ? 'btn-navy' : 'btn-outline'}`}
+              className={`segmented-tab ${mode === 'confirm' ? 'active' : ''}`}
               onClick={() => {
                 setMode('confirm');
                 setErrorMessage(null);
                 setSuccessMessage(null);
               }}
             >
-              Nhập mã đặt lại
+              Đã có mã đặt lại
             </button>
           </div>
 
@@ -158,6 +162,7 @@ export function ResetPasswordPage() {
                 className="btn btn-primary btn-full"
                 disabled={isSubmitting}
               >
+                <Mail className="h-4 w-4" aria-hidden="true" />
                 {isSubmitting ? 'Đang xử lý...' : 'Gửi hướng dẫn đặt lại mật khẩu'}
               </button>
             </form>
@@ -184,11 +189,11 @@ export function ResetPasswordPage() {
                 <input
                   id="reset-token"
                   type="text"
-                  className="form-input"
+                  className="form-input font-mono"
                   required
                   value={token}
                   onChange={(e) => setToken(e.target.value)}
-                  placeholder="Dán mã do Quản trị viên hoặc Email cung cấp"
+                  placeholder="Dán mã do Quản lý hoặc Email cung cấp"
                 />
               </div>
 
@@ -204,12 +209,13 @@ export function ResetPasswordPage() {
                   minLength={8}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Tối thiểu 8 ký tự (chữ hoa, thường, số)"
                 />
               </div>
 
               <div className="form-group">
                 <label className="form-label" htmlFor="reset-confirm-password">
-                  Xác nhận mật khẩu mới
+                  Nhập lại mật khẩu mới
                 </label>
                 <input
                   id="reset-confirm-password"
@@ -227,6 +233,7 @@ export function ResetPasswordPage() {
                 className="btn btn-primary btn-full"
                 disabled={isSubmitting}
               >
+                <KeyRound className="h-4 w-4" aria-hidden="true" />
                 {isSubmitting ? 'Đang cập nhật...' : 'Đặt mật khẩu mới'}
               </button>
             </form>
@@ -240,4 +247,3 @@ export function ResetPasswordPage() {
     </div>
   );
 }
-

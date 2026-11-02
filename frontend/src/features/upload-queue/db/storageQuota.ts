@@ -102,11 +102,18 @@ export async function estimateStorageQuota(): Promise<StorageQuotaEstimate> {
     const isCriticallyLow = available < CRITICAL_MIN_STORAGE_BYTES;
     const isLowSpace = available < LOW_STORAGE_WARNING_BYTES;
 
+    const isLikelyIncognitoQuota =
+      quota !== null && quota > 0 && quota < 250 * 1024 * 1024;
+
     let warningMessage: string | null = null;
     if (isCriticallyLow) {
-      warningMessage = `Bộ nhớ trình duyệt còn quá ít (${formatBytes(available)} khả dụng). Vui lòng chờ các video đang chờ tải lên hoàn tất lưu trữ hoặc giải phóng bộ nhớ thiết bị trước khi quay mới.`;
+      warningMessage = isLikelyIncognitoQuota
+        ? `Bộ nhớ trình duyệt còn quá ít (${formatBytes(available)} khả dụng / hạn mức ${formatBytes(quota)}). Có thể bạn đang mở Tab Ẩn danh (Incognito) nên Chrome giới hạn bộ nhớ tạm rất thấp — vui lòng mở bằng Tab Chrome thông thường.`
+        : `Bộ nhớ trình duyệt còn quá ít (${formatBytes(available)} khả dụng). Vui lòng chờ các video đang chờ tải lên hoàn tất lưu trữ hoặc giải phóng bộ nhớ thiết bị trước khi quay mới.`;
     } else if (isLowSpace) {
-      warningMessage = `Bộ nhớ lưu tạm còn khoảng ${formatBytes(available)}. Nên quay ngắn gọn và hoàn tất tải lên sớm để tránh đầy bộ nhớ giữa chừng.`;
+      warningMessage = isLikelyIncognitoQuota
+        ? `Bộ nhớ lưu tạm còn khoảng ${formatBytes(available)} (tổng hạn mức ${formatBytes(quota)}). Nếu đang dùng Tab Ẩn danh (Incognito), hãy chuyển sang Tab Chrome thông thường để mở khóa toàn bộ dung lượng lưu trữ của điện thoại.`
+        : `Bộ nhớ lưu tạm còn khoảng ${formatBytes(available)}. Nên quay ngắn gọn và hoàn tất tải lên sớm để tránh đầy bộ nhớ giữa chừng.`;
     }
 
     return {

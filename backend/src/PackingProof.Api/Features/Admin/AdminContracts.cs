@@ -19,6 +19,24 @@ public sealed record UpdateUserGrantsRequest(
     Guid? DefaultShopId = null,
     Guid? DefaultWarehouseId = null);
 
+public sealed record CreateAdminUserRequest(
+    string FullName,
+    string Email,
+    string Password,
+    IReadOnlyList<GrantProposalDto>? Grants = null,
+    Guid? DefaultShopId = null,
+    Guid? DefaultWarehouseId = null,
+    bool ForcePasswordReset = false);
+
+public sealed record UpdateAdminUserProfileRequest(
+    string FullName,
+    Guid? DefaultShopId = null,
+    Guid? DefaultWarehouseId = null);
+
+public sealed record AdminSetUserPasswordRequest(
+    string NewPassword,
+    bool ForcePasswordReset = false);
+
 public sealed record AdminUserSummaryDto(
     Guid Id,
     string Email,
@@ -139,12 +157,69 @@ public sealed record CreateAdminShopRequest(
     string Code,
     string Name,
     string? Slug = null,
-    string? AllowedStorageSubdir = null);
+    string? AllowedStorageSubdir = null,
+    bool CreateDefaultWarehouse = false,
+    string? DefaultWarehouseName = null);
 
 public sealed record CreateAdminWarehouseRequest(
     string Code,
     string Name,
     bool CreateDefaultStation = true);
+
+public sealed record AdminPackingStationDto(
+    Guid Id,
+    Guid WarehouseId,
+    string Code,
+    string Name,
+    bool IsActive,
+    DateTime CreatedAtUtc);
+
+public sealed record AdminWarehouseDetailDto(
+    Guid Id,
+    Guid ShopId,
+    string Code,
+    string Name,
+    bool IsActive,
+    int AssignedUserCount,
+    int RecordingCount,
+    DateTime CreatedAtUtc,
+    IReadOnlyList<AdminPackingStationDto> PackingStations);
+
+public sealed record AdminShopWarehouseTreeDto(
+    Guid Id,
+    string Code,
+    string Slug,
+    string Name,
+    string AllowedStorageSubdir,
+    bool IsActive,
+    int AssignedUserCount,
+    int RecordingCount,
+    DateTime CreatedAtUtc,
+    IReadOnlyList<AdminWarehouseDetailDto> Warehouses);
+
+public sealed record AdminWarehousesOverviewDto(
+    bool CanManageShops,
+    IReadOnlyList<AdminShopWarehouseTreeDto> Shops);
+
+public sealed record UpdateAdminShopRequest(
+    string Name,
+    bool IsActive,
+    string? Code = null,
+    string? AllowedStorageSubdir = null);
+
+public sealed record UpdateAdminWarehouseRequest(
+    string Code,
+    string Name,
+    bool IsActive);
+
+public sealed record CreateAdminPackingStationRequest(
+    string Code,
+    string Name);
+
+public sealed record UpdateAdminPackingStationRequest(
+    string Code,
+    string Name,
+    bool IsActive);
 
 public sealed record AuditEventDto(
     long Id,

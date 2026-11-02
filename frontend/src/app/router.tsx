@@ -8,6 +8,8 @@ import { AuditLogPage } from '../features/admin/AuditLogPage';
 import { RolesAdminPage } from '../features/admin/RolesAdminPage';
 import { StorageAdminPage } from '../features/admin/StorageAdminPage';
 import { UsersAdminPage } from '../features/admin/UsersAdminPage';
+import { WarehousesAdminPage } from '../features/admin/WarehousesAdminPage';
+import { AccountProfilePage } from '../features/auth/AccountProfilePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { MfaSecurityPage } from '../features/auth/MfaSecurityPage';
 import { PendingApprovalPage } from '../features/auth/PendingApprovalPage';
@@ -47,6 +49,17 @@ function RequireActiveUser({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function ForbiddenCard() {
+  return (
+    <div className="surface-card" role="alert">
+      <h1 style={{ marginTop: 0, fontSize: '1.25rem' }}>Không đủ quyền truy cập</h1>
+      <p style={{ color: 'var(--color-text-muted)', marginBottom: 0 }}>
+        Tài khoản của bạn không được cấp quyền để mở chức năng này.
+      </p>
+    </div>
+  );
+}
+
 function RequireAnyPermission({
   permissions,
   children
@@ -58,14 +71,23 @@ function RequireAnyPermission({
   const allowed = permissions.some((code) => hasPermission(code));
 
   if (!allowed) {
-    return (
-      <div className="surface-card" role="alert">
-        <h1 style={{ marginTop: 0, fontSize: '1.25rem' }}>Không đủ quyền truy cập</h1>
-        <p style={{ color: 'var(--color-text-muted)', marginBottom: 0 }}>
-          Tài khoản của bạn không được cấp quyền để mở chức năng này.
-        </p>
-      </div>
-    );
+    return <ForbiddenCard />;
+  }
+
+  return <>{children}</>;
+}
+
+function RequireWarehouseAdminAccess({ children }: { children: ReactNode }) {
+  const { user, hasPermission } = useAuth();
+  const allowed =
+    hasPermission(Permissions.StorageManage) ||
+    (hasPermission(Permissions.UserManage) &&
+      Boolean(
+        user?.isSuperAdmin || user?.grants.some((g) => g.scopeType === 'Shop')
+      ));
+
+  if (!allowed) {
+    return <ForbiddenCard />;
   }
 
   return <>{children}</>;
@@ -149,6 +171,7 @@ export function AppRoutes({ checkPendingRecordingsCount }: AppRoutesProps) {
             </RequireAnyPermission>
           }
         />
+        <Route path="account" element={<AccountProfilePage />} />
         <Route path="security/mfa" element={<MfaSecurityPage />} />
         <Route
           path="admin/users"
@@ -156,6 +179,14 @@ export function AppRoutes({ checkPendingRecordingsCount }: AppRoutesProps) {
             <RequireAnyPermission permissions={[Permissions.UserManage]}>
               <UsersAdminPage />
             </RequireAnyPermission>
+          }
+        />
+        <Route
+          path="admin/warehouses"
+          element={
+            <RequireWarehouseAdminAccess>
+              <WarehousesAdminPage />
+            </RequireWarehouseAdminAccess>
           }
         />
         <Route

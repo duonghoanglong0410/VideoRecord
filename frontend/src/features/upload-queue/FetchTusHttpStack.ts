@@ -59,6 +59,17 @@ class FetchTusHttpRequest implements HttpRequest {
 
   constructor(method: string, url: string) {
     this.method = method.toUpperCase();
+    if (/^https?:\/\//i.test(url)) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.pathname.startsWith('/api/uploads')) {
+          this.url = `${parsed.pathname}${parsed.search}`;
+          return;
+        }
+      } catch {
+        // Keep original URL if parsing fails
+      }
+    }
     this.url = url;
   }
 

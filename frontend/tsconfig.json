@@ -17,6 +17,6 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client", "node", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "vite.config.ts", "devHttpsCert.ts"]
 }
 

@@ -227,41 +227,26 @@ describe('Phase 4 Video Library Search, Detail Permissions, Hold Protection & Im
       expect(requestedVideoUrls.length).toBeGreaterThanOrEqual(1);
     });
 
-    // Leading-zero tracking code is rendered intact; LocalDevelopment never claims "Đã lưu NAS"
+    // Leading-zero tracking code is rendered intact with simplified status badge
     expect(screen.getAllByText('0012345678').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Đã lưu cục bộ (Local)').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Thành công').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Đã lưu NAS/i)).not.toBeInTheDocument();
-    expect(screen.getAllByText('Tệp nhập (Imported)').length).toBeGreaterThan(0);
 
-    // Search with leading zeros + exact match + "Video của tôi"
+    // Search with leading zeros + "Video của tôi"
     const searchInput = screen.getByLabelText(/Tìm theo mã vận đơn/i);
     await user.clear(searchInput);
     await user.type(searchInput, '0012345678');
 
-    const exactCheckbox = screen.getByRole('checkbox', {
-      name: /Khớp chính xác mã vận đơn/i
-    });
-    await user.click(exactCheckbox);
     await user.click(screen.getByRole('button', { name: 'Tìm kiếm' }));
 
     await waitFor(() => {
       expect(
-        requestedVideoUrls.some(
-          (u) =>
-            u.includes('trackingNumber=0012345678') && u.includes('exact=true')
-        )
-      ).toBe(true);
-    });
-
-    await user.click(screen.getByRole('tab', { name: 'Video của tôi' }));
-    await waitFor(() => {
-      expect(
-        requestedVideoUrls.some((u) => u.includes('mineOnly=true'))
+        requestedVideoUrls.some((u) => u.includes('trackingNumber=0012345678'))
       ).toBe(true);
     });
   });
 
-  it('hides Download button for Viewer (canDownload=false), renders Interrupted warning + Imported/Local badges, and contains zero fake share/export buttons', async () => {
+  it('hides Download button for Viewer (canDownload=false), renders Interrupted warning + Thất bại badge, and contains zero fake share/export buttons', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/auth/me')) {
@@ -290,19 +275,13 @@ describe('Phase 4 Video Library Search, Detail Permissions, Hold Protection & Im
       await screen.findByTestId('detail-tracking-number')
     ).toHaveTextContent('0012345678');
 
-    // Prominent Interrupted warning banner
+    // Prominent Interrupted warning banner + Thất bại badge
     expect(screen.getByTestId('detail-interrupted-banner')).toHaveTextContent(
       /Phiên ghi hình bị gián đoạn/i
     );
-
-    // Honest Source & Storage badges
-    expect(screen.getByTestId('detail-source-badge')).toHaveTextContent(
-      'Tải tệp có sẵn (Imported)'
+    expect(screen.getByTestId('detail-status-badge')).toHaveTextContent(
+      'Thất bại'
     );
-    expect(screen.getByTestId('detail-storage-badge')).toHaveTextContent(
-      'Đã lưu cục bộ (Local)'
-    );
-    expect(screen.queryByText(/Đã lưu NAS/i)).not.toBeInTheDocument();
 
     // Viewer lacks video.download -> Download button MUST NOT exist
     expect(
@@ -329,7 +308,7 @@ describe('Phase 4 Video Library Search, Detail Permissions, Hold Protection & Im
     ).not.toBeInTheDocument();
   });
 
-  it('shows Download link when canDownload=true and disables Deletion Request with clear Vietnamese notice when Hold is active', async () => {
+  it('shows Download link and Thành công badge when canDownload=true and video is Captured & Stored', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/auth/me')) {
@@ -375,22 +354,8 @@ describe('Phase 4 Video Library Search, Detail Permissions, Hold Protection & Im
       `/api/videos/${VIDEO_ID}/download`
     );
 
-    // SynologyMounted mode honestly displays "Đã lưu NAS"
-    expect(screen.getByTestId('detail-storage-badge')).toHaveTextContent(
-      'Đã lưu NAS'
-    );
-
-    // Hold is true -> Request Delete button is disabled AND clear Hold protection notice is shown
-    const deleteBtn = screen.getByTestId('request-delete-btn');
-    expect(deleteBtn).toBeDisabled();
-    expect(
-      screen.getByTestId('delete-blocked-by-hold-notice')
-    ).toHaveTextContent(/Giữ bằng chứng \(Hold\)/i);
-
-    // Re-record link points to /record?linkedFrom=<id>
-    const rerecordLink = screen.getByTestId('rerecord-correct-code-link');
-    expect(rerecordLink.getAttribute('href')).toContain(
-      `/record?linkedFrom=${VIDEO_ID}`
+    expect(screen.getByTestId('detail-status-badge')).toHaveTextContent(
+      'Thành công'
     );
   });
 

@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Camera,
+  Clock,
+  CloudUpload,
+  Loader2,
+  RefreshCw,
+  Trash2
+} from 'lucide-react';
 import { useAuth } from '../../app/authStore';
 import { Permissions, type StorageMode } from '../../app/types';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { PageHeader } from '../../components/ui/PageHeader';
 import {
   deleteLocalRecordingForUser,
   listLocalRecordingsForUser,
@@ -9,74 +21,71 @@ import {
   verifyLocalRecordingIntegrity,
   type LocalRecordingManifest
 } from './db/packingProofIdb';
-import {
-  estimateStorageQuota,
-  formatBytes,
-  type StorageQuotaEstimate
-} from './db/storageQuota';
+import { formatBytes } from './db/storageQuota';
 import { useTusUploadQueue } from './TusUploadCoordinator';
 import type { LiveUploadProgress } from './tusQueueManager';
 
 function resolveSyncBadge(
   item: LocalRecordingManifest,
   fallbackStorageMode: StorageMode | undefined
-): { label: string; className: string } {
+): { label: string; badgeClass: string } {
   switch (item.localSyncState) {
     case 'Recording':
       return {
-        label: 'Đang ghi hình cục bộ',
-        className: 'status-pill status-pill-recording'
+        label: 'Đang quay trên máy',
+        badgeClass: 'border-red-200 bg-red-50 text-red-700'
       };
     case 'ReadyToUpload':
       return {
         label:
           (item.uploadedBytes ?? 0) > 0
-            ? 'Đã lưu tạm — Sẵn sàng nối lại tải lên'
-            : 'Đã lưu tạm — Chờ tải lên máy chủ',
-        className: 'status-pill status-pill-ready'
+            ? 'Đã lưu trên máy — Chờ gửi tiếp'
+            : 'Đã lưu trên máy — Chờ gửi lên',
+        badgeClass: 'border-slate-200 bg-slate-100 text-slate-700'
       };
     case 'Uploading':
       return {
-        label: 'Đang tải lên máy chủ (tus)...',
-        className: 'status-pill status-pill-uploading'
+        label: 'Đang gửi lên hệ thống...',
+        badgeClass: 'border-blue-200 bg-blue-50 text-blue-700'
       };
     case 'UploadedWaitingStorage':
       if (item.serverStorageStatus === 'WaitingForStorage') {
         return {
           label: 'Đã nhận trên máy chủ — Chờ kết nối kho lưu trữ',
-          className: 'status-pill status-pill-starting'
+          badgeClass: 'border-amber-200 bg-amber-50 text-amber-800'
         };
       }
       return {
         label: 'Đã nhận trên máy chủ — đang xác minh & lưu trữ',
-        className: 'status-pill status-pill-validating'
+        badgeClass: 'border-blue-200 bg-blue-50 text-blue-800'
       };
     case 'StoredConfirmed': {
-      const effectiveMode = item.confirmedStorageMode ?? fallbackStorageMode ?? 'LocalDevelopment';
+      const effectiveMode =
+        item.confirmedStorageMode ?? fallbackStorageMode ?? 'LocalDevelopment';
       return {
         label:
           effectiveMode === 'SynologyMounted'
             ? 'Đã lưu NAS'
             : 'Đã lưu cục bộ (Local)',
-        className: 'status-pill status-pill-completed'
+        badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-800'
       };
     }
     case 'Failed':
       return {
         label: item.integrityCorrupted
-          ? 'Lỗi mất dữ liệu tạm'
-          : 'Lỗi tải lên / lưu trữ',
-        className: 'status-pill status-pill-interrupted'
+          ? 'Lỗi mất dữ liệu trên máy'
+          : 'Tạm dừng — Gặp lỗi gửi lên',
+        badgeClass: 'border-red-200 bg-red-50 text-red-700'
       };
     case 'Discarded':
       return {
         label: 'Đã hủy',
-        className: 'status-pill status-pill-interrupted'
+        badgeClass: 'border-slate-200 bg-slate-100 text-slate-600'
       };
     default:
       return {
         label: item.localSyncState,
-        className: 'status-pill status-pill-ready'
+        badgeClass: 'border-slate-200 bg-slate-100 text-slate-700'
       };
   }
 }
@@ -140,7 +149,6 @@ export function UploadQueuePage() {
 
   const [standaloneItems, setStandaloneItems] = useState<LocalRecordingManifest[]>([]);
   const [standaloneLoading, setStandaloneLoading] = useState<boolean>(!coordinator);
-  const [quota, setQuota] = useState<StorageQuotaEstimate | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
@@ -170,18 +178,13 @@ export function UploadQueuePage() {
         }
       }
 
-      const [refreshedList, storageEst] = await Promise.all([
-        listLocalRecordingsForUser(user.id),
-        estimateStorageQuota()
-      ]);
-
+      const refreshedList = await listLocalRecordingsForUser(user.id);
       setStandaloneItems(refreshedList);
-      setQuota(storageEst);
     } catch (err) {
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : 'Không thể đọc dữ liệu hàng đợi lưu tạm từ trình duyệt.'
+          : 'Không thể đọc dữ liệu hàng đợi video trên thiết bị này.'
       );
     } finally {
       setStandaloneLoading(false);
@@ -191,10 +194,7 @@ export function UploadQueuePage() {
   const handleRefresh = useCallback(async () => {
     setErrorMsg(null);
     if (coordinator) {
-      await Promise.all([
-        coordinator.refreshQueue(true),
-        estimateStorageQuota().then(setQuota)
-      ]);
+      await coordinator.refreshQueue(true);
     } else {
       await loadStandaloneQueue();
     }
@@ -203,24 +203,19 @@ export function UploadQueuePage() {
   const hasCoordinator = Boolean(coordinator);
 
   useEffect(() => {
-    let active = true;
-    if (hasCoordinator) {
-      void estimateStorageQuota().then((est) => {
-        if (active) {
-          setQuota(est);
-        }
-      });
-    } else {
+    if (!hasCoordinator) {
       void loadStandaloneQueue();
     }
-    return () => {
-      active = false;
-    };
   }, [hasCoordinator, loadStandaloneQueue]);
 
-  const items = coordinator ? coordinator.items : standaloneItems;
+  const rawItems = coordinator ? coordinator.items : standaloneItems;
+  const items = rawItems.filter(
+    (item) =>
+      item.captureStatus !== 'Created' &&
+      item.captureStatus !== 'Cancelled' &&
+      item.localSyncState !== 'Discarded'
+  );
   const isLoading = coordinator ? coordinator.isLoading : standaloneLoading;
-  const activeRecordingId = coordinator?.activeRecordingId ?? null;
   const liveProgressById = coordinator?.liveProgressById ?? {};
   const isPausedForAuth = coordinator?.isPausedForAuth ?? false;
 
@@ -237,7 +232,7 @@ export function UploadQueuePage() {
         setErrorMsg(
           err instanceof Error
             ? err.message
-            : 'Không thể thử lại tải lên cho bản ghi này.'
+            : 'Không thể thử gửi lại video này.'
         );
       } finally {
         setRetryingId(null);
@@ -256,116 +251,103 @@ export function UploadQueuePage() {
         await handleRefresh();
       } catch (err) {
         setErrorMsg(
-          err instanceof Error ? err.message : 'Không thể xóa bản ghi khỏi bộ nhớ tạm.'
+          err instanceof Error
+            ? err.message
+            : 'Không thể dọn mục này khỏi danh sách trên máy.'
         );
       }
     },
     [handleRefresh, user?.id]
   );
 
-  const pendingCount = items.filter(
-    (item) =>
-      item.captureStatus !== 'Cancelled' &&
-      item.localSyncState !== 'StoredConfirmed' &&
-      item.localSyncState !== 'Discarded'
-  ).length;
-
-  const maxPending = runtimeConfig?.maxLocalPendingRecordings ?? 3;
   const combinedError = errorMsg ?? coordinator?.queueError ?? null;
 
   return (
-    <div>
-      <div className="surface-card">
-        <div className="recording-header-row">
-          <div>
-            <h1 style={{ margin: 0, fontSize: '1.3rem' }}>
-              Hàng đợi tải lên &amp; lưu trữ video
-            </h1>
-            <p
-              style={{
-                margin: '4px 0 0',
-                fontSize: '0.9rem',
-                color: 'var(--color-text-muted)'
-              }}
-            >
-              Các bản ghi được cô lập riêng cho tài khoản <strong>{user?.email}</strong>, tự động
-              tải nối lại qua giao thức tus (tối đa 1 luồng tại một thời điểm) và chỉ giải phóng
-              dữ liệu tạm sau khi máy chủ xác nhận lưu trữ hoàn tất.
-            </p>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => void handleRefresh()}
-              disabled={isLoading}
-            >
-              Làm mới
-            </button>
-            {hasPermission(Permissions.RecordingCreate) && (
-              <Link to="/record" className="btn btn-primary">
-                Quay đơn mới
-              </Link>
-            )}
-          </div>
-        </div>
-
-        <div className="queue-stats-strip">
-          <div>
-            Bản ghi đang chờ hoàn tất: <strong>{pendingCount}</strong> / {maxPending} tối đa
-          </div>
-          {activeRecordingId && (
-            <div data-testid="queue-active-transfer-indicator">
-              Trạng thái luồng: <strong>Đang tải lên 1 video</strong>
-            </div>
-          )}
-          {quota?.supported && quota.availableBytes !== null && (
-            <div>
-              Bộ nhớ trình duyệt khả dụng:{' '}
-              <strong>{formatBytes(quota.availableBytes)}</strong>
-              {quota.usageBytes !== null
-                ? ` (Đang dùng ${formatBytes(quota.usageBytes)})`
-                : ''}
-            </div>
-          )}
-        </div>
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+        <PageHeader
+          title="Tiến trình tải lên"
+          actions={
+            <>
+              <button
+                type="button"
+                className="btn btn-outline inline-flex items-center gap-1.5"
+                onClick={() => void handleRefresh()}
+                disabled={isLoading}
+              >
+                <RefreshCw
+                  className={`h-4 w-4 shrink-0 ${isLoading ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>Làm mới</span>
+              </button>
+              {hasPermission(Permissions.RecordingCreate) && (
+                <Link
+                  to="/record"
+                  className="btn btn-primary inline-flex items-center gap-1.5"
+                >
+                  <Camera className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>Quay đơn mới</span>
+                </Link>
+              )}
+            </>
+          }
+        />
 
         {isPausedForAuth && (
           <div
-            className="alert alert-warning"
+            className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-sm text-amber-950"
             role="alert"
             data-testid="queue-paused-auth-banner"
-            style={{ marginTop: 12, marginBottom: 0 }}
           >
-            Hàng đợi tải lên đã tạm dừng do phiên đăng nhập hết hạn hoặc bị thu hồi. Toàn bộ dữ
-            liệu video trên thiết bị vẫn được bảo toàn — vui lòng đăng nhập lại để tiếp tục.
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+            <span>
+              Tạm dừng gửi video do phiên đăng nhập đã hết hạn. Toàn bộ video quay xong vẫn an
+              toàn trên máy — vui lòng đăng nhập lại để hệ thống tự gửi tiếp.
+            </span>
           </div>
         )}
 
         {combinedError && (
           <div
-            className="alert alert-error"
+            className="mt-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-3.5 text-sm text-red-900"
             role="alert"
-            style={{ marginTop: 12, marginBottom: 0 }}
           >
-            {combinedError}
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+            <span>{combinedError}</span>
           </div>
         )}
       </div>
 
       {isLoading ? (
-        <div className="surface-card" role="status">
-          Đang kiểm tra dữ liệu lưu tạm IndexedDB...
+        <div
+          className="flex items-center justify-center gap-2.5 rounded-2xl border border-slate-200 bg-white p-8 text-sm font-medium text-slate-600"
+          role="status"
+        >
+          <Loader2 className="h-5 w-5 animate-spin text-blue-600" aria-hidden="true" />
+          <span>Đang kiểm tra danh sách video trên máy...</span>
         </div>
       ) : items.length === 0 ? (
-        <div className="surface-card">
-          <p style={{ margin: 0, color: 'var(--color-text-muted)' }}>
-            Hiện không có video nào trong hàng đợi trên trình duyệt này cho tài khoản của bạn.
-          </p>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-2xs">
+          <EmptyState
+            icon={<CloudUpload className="h-6 w-6" />}
+            title="Chưa có video nào trong hàng đợi trên máy này"
+            description="Khi bạn quay xong đơn hàng, video sẽ xuất hiện tại đây và tự động gửi lên hệ thống."
+            action={
+              hasPermission(Permissions.RecordingCreate) ? (
+                <Link
+                  to="/record"
+                  className="btn btn-primary inline-flex items-center gap-2"
+                >
+                  <Camera className="h-4 w-4" aria-hidden="true" />
+                  <span>Bắt đầu quay đơn mới</span>
+                </Link>
+              ) : undefined
+            }
+          />
         </div>
       ) : (
-        <div className="queue-list" data-testid="local-upload-queue-list">
+        <div className="space-y-3" data-testid="local-upload-queue-list">
           {items.map((item) => {
             const syncBadge = resolveSyncBadge(item, runtimeConfig?.storageMode);
             const progress = resolveByteProgress(
@@ -381,79 +363,70 @@ export function UploadQueuePage() {
             return (
               <div
                 key={item.recordingId}
-                className="surface-card queue-item-card"
+                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5"
                 data-testid={`queue-item-${item.recordingId}`}
               >
-                <div className="queue-item-header">
+                <div className="flex flex-wrap items-start justify-between gap-2.5">
                   <div>
-                    <div className="queue-item-tracking">{item.trackingNumber}</div>
-                    <div className="queue-item-meta">
-                      {item.shopName} • {item.warehouseName} • Tạo lúc{' '}
-                      {formatViDateTime(item.createdAt)}
+                    <div className="break-all font-mono text-base font-bold tracking-wide text-slate-950 sm:text-lg">
+                      {item.trackingNumber}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                      <span className="inline-flex items-center gap-1">
+                        <Clock className="h-3 w-3" aria-hidden="true" />
+                        <span>{formatViDateTime(item.createdAt)}</span>
+                      </span>
+                      <span>•</span>
+                      <span className="font-mono">{item.durationSeconds.toFixed(1)}s</span>
+                      <span>•</span>
+                      <span className="font-mono">{formatBytes(item.totalBytes)}</span>
                     </div>
                   </div>
 
-                  <div className="queue-item-badges">
-                    {item.captureStatus === 'Captured' && !item.integrityCorrupted && (
-                      <span
-                        className="status-pill status-pill-completed"
-                        data-testid={`capture-badge-${item.recordingId}`}
-                      >
-                        Hoàn chỉnh
-                      </span>
-                    )}
-                    {item.captureStatus === 'Interrupted' && (
-                      <span
-                        className="status-pill status-pill-interrupted"
-                        data-testid={`capture-badge-${item.recordingId}`}
-                      >
-                        Bị gián đoạn
-                      </span>
-                    )}
-                    {item.integrityCorrupted && (
-                      <span className="status-pill status-pill-interrupted">
-                        Mất dữ liệu tạm
-                      </span>
-                    )}
-                    <span
-                      className={syncBadge.className}
-                      data-testid={`storage-badge-${item.recordingId}`}
-                    >
-                      {syncBadge.label}
-                    </span>
-                  </div>
+                  <span
+                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${syncBadge.badgeClass}`}
+                    data-testid={`storage-badge-${item.recordingId}`}
+                  >
+                    {syncBadge.label}
+                  </span>
                 </div>
 
                 {progress.bytesTotal > 0 && item.localSyncState !== 'Recording' && (
                   <div
-                    className="queue-progress-block"
+                    className="mt-3 rounded-xl border border-slate-100 bg-slate-50/80 p-3"
                     data-testid={`upload-progress-${item.recordingId}`}
                   >
-                    <div className="queue-progress-labels">
+                    <div className="mb-1.5 flex items-center justify-between gap-2 text-xs text-slate-600">
                       <span>
-                        Tiến độ truyền tải:{' '}
-                        <strong data-testid={`upload-bytes-${item.recordingId}`}>
+                        Đã gửi:{' '}
+                        <strong
+                          className="font-mono text-slate-900"
+                          data-testid={`upload-bytes-${item.recordingId}`}
+                        >
                           {formatBytes(progress.bytesSent)} / {formatBytes(progress.bytesTotal)}
                         </strong>
                       </span>
-                      <strong data-testid={`upload-percent-${item.recordingId}`}>
+                      <strong
+                        className="font-mono text-slate-900"
+                        data-testid={`upload-percent-${item.recordingId}`}
+                      >
                         {progress.percentage}%
                       </strong>
                     </div>
                     <div
-                      className="queue-progress-track"
+                      className="h-2 w-full overflow-hidden rounded-full bg-slate-200"
                       role="progressbar"
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={progress.percentage}
                     >
                       <div
-                        className={`queue-progress-fill${
+                        className={`h-full rounded-full transition-all duration-200 ${
                           item.localSyncState === 'StoredConfirmed'
-                            ? ' queue-progress-fill-stored'
+                            ? 'bg-emerald-600'
                             : item.localSyncState === 'Failed'
-                              ? ' queue-progress-fill-failed'
-                              : ''
+                              ? 'bg-red-500'
+                              : 'bg-blue-600'
                         }`}
                         style={{ width: `${progress.percentage}%` }}
                       />
@@ -461,56 +434,44 @@ export function UploadQueuePage() {
                   </div>
                 )}
 
-                <div className="queue-item-metrics">
-                  <span>
-                    Dung lượng gốc: <strong>{formatBytes(item.totalBytes)}</strong> (
-                    {item.chunkCount} chunks)
-                  </span>
-                  <span>
-                    Thời lượng ghi nhận: <strong>{item.durationSeconds.toFixed(1)} giây</strong>
-                  </span>
-                  <span>
-                    Định dạng: <strong>{item.mimeType || 'video/webm'}</strong>
-                  </span>
-                  {item.chunksPurged && (
-                    <span data-testid={`chunks-purged-note-${item.recordingId}`}>
-                      Bộ nhớ tạm: <strong>Đã giải phóng khỏi thiết bị</strong>
-                    </span>
-                  )}
-                </div>
-
                 {item.interruptionReason && (
-                  <div
-                    className="alert alert-warning"
-                    style={{ marginTop: 10, marginBottom: 0 }}
-                  >
-                    {item.interruptionReason}
+                  <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" aria-hidden="true" />
+                    <span>{item.interruptionReason}</span>
                   </div>
                 )}
 
                 {item.lastError && item.lastError !== item.interruptionReason && (
                   <div
-                    className="alert alert-error"
+                    className="mt-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-900"
                     data-testid={`queue-error-${item.recordingId}`}
-                    style={{ marginTop: 10, marginBottom: 0 }}
                   >
-                    {item.lastError}
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600" aria-hidden="true" />
+                    <span>{item.lastError}</span>
                   </div>
                 )}
 
                 {(canRetry ||
                   item.integrityCorrupted ||
                   item.localSyncState === 'StoredConfirmed') && (
-                  <div className="queue-item-actions">
+                  <div className="mt-3.5 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
                     {canRetry && (
                       <button
                         type="button"
-                        className="btn btn-primary"
+                        className="btn btn-primary inline-flex items-center gap-1.5"
                         data-testid={`retry-btn-${item.recordingId}`}
                         disabled={retryingId === item.recordingId}
                         onClick={() => void handleRetryItem(item.recordingId)}
                       >
-                        {retryingId === item.recordingId ? 'Đang thử lại...' : 'Thử lại'}
+                        <RefreshCw
+                          className={`h-4 w-4 shrink-0 ${
+                            retryingId === item.recordingId ? 'animate-spin' : ''
+                          }`}
+                          aria-hidden="true"
+                        />
+                        <span>
+                          {retryingId === item.recordingId ? 'Đang thử lại...' : 'Thử lại'}
+                        </span>
                       </button>
                     )}
 
@@ -518,15 +479,18 @@ export function UploadQueuePage() {
                       item.localSyncState === 'StoredConfirmed') && (
                       <button
                         type="button"
-                        className="btn btn-outline"
+                        className="btn btn-outline inline-flex items-center gap-1.5"
                         data-testid={`cleanup-btn-${item.recordingId}`}
                         onClick={() =>
                           void handleRemoveCorruptedOrConfirmed(item.recordingId)
                         }
                       >
-                        {item.integrityCorrupted
-                          ? 'Gỡ mục hỏng khỏi thiết bị'
-                          : 'Ẩn mục đã lưu trữ khỏi danh sách'}
+                        <Trash2 className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
+                        <span>
+                          {item.integrityCorrupted
+                            ? 'Gỡ mục lỗi khỏi máy'
+                            : 'Ẩn mục đã lưu xong'}
+                        </span>
                       </button>
                     )}
                   </div>

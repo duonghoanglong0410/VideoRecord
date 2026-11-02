@@ -1,5 +1,31 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Edit3,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Loader2,
+  Lock,
+  LogOut,
+  Plus,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Unlock,
+  UserCheck,
+  UserPlus,
+  Users,
+  X
+} from 'lucide-react';
 import { useAuth } from '../../app/authStore';
 import {
   formatHoChiMinhDateTime,
@@ -7,19 +33,25 @@ import {
   getScopeTypeLabel
 } from '../../app/formatters';
 import type { ApprovalStatus, ScopeType } from '../../app/types';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { SYSTEM_ROLE_VIETNAMESE_TITLES } from '../../shared/labels/permissionLabels';
 import {
   fetchAccessibleShops,
   type ShopOption
 } from '../recording/recordingApi';
 import {
   approveAdminUserApi,
+  createAdminUserApi,
   initiateAdminPasswordResetApi,
   listAdminRolesApi,
   listAdminUsersApi,
   lockAdminUserApi,
   revokeAdminUserSessionsApi,
+  setAdminUserPasswordDirectApi,
   unlockAdminUserApi,
   updateAdminUserGrantsApi,
+  updateAdminUserProfileApi,
   type AdminPasswordResetInitiatedResponse,
   type AdminUserSummaryDto,
   type GrantProposalDto,
@@ -75,6 +107,37 @@ export function UsersAdminPage() {
   const [resetResult, setResetResult] =
     useState<AdminPasswordResetInitiatedResponse | null>(null);
   const [copiedToken, setCopiedToken] = useState<boolean>(false);
+
+  // Direct Create User Modal state
+  const [isCreateUserOpen, setIsCreateUserOpen] = useState<boolean>(false);
+  const [newFullName, setNewFullName] = useState<string>('');
+  const [newEmail, setNewEmail] = useState<string>('');
+  const [newPassword, setNewPassword] = useState<string>('');
+  const [showNewPassword, setShowNewPassword] = useState<boolean>(false);
+  const [newRoleId, setNewRoleId] = useState<string>('');
+  const [newShopId, setNewShopId] = useState<string>('');
+  const [newWarehouseId, setNewWarehouseId] = useState<string>('');
+  const [newForceReset, setNewForceReset] = useState<boolean>(false);
+  const [isCreatingUser, setIsCreatingUser] = useState<boolean>(false);
+  const [createUserError, setCreateUserError] = useState<string | null>(null);
+
+  // Edit User Profile Modal state
+  const [profileUser, setProfileUser] = useState<AdminUserSummaryDto | null>(null);
+  const [editFullName, setEditFullName] = useState<string>('');
+  const [editDefaultShopId, setEditDefaultShopId] = useState<string>('');
+  const [editDefaultWarehouseId, setEditDefaultWarehouseId] = useState<string>('');
+  const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  // Direct Set Password Modal state
+  const [directPwdUser, setDirectPwdUser] = useState<AdminUserSummaryDto | null>(
+    null
+  );
+  const [directPwdInput, setDirectPwdInput] = useState<string>('');
+  const [showDirectPwd, setShowDirectPwd] = useState<boolean>(false);
+  const [directPwdForceReset, setDirectPwdForceReset] = useState<boolean>(false);
+  const [isSettingDirectPwd, setIsSettingDirectPwd] = useState<boolean>(false);
+  const [directPwdError, setDirectPwdError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -228,7 +291,7 @@ export function UsersAdminPage() {
     }
 
     if (grantRows.length === 0) {
-      setModalError('Vui lòng gán ít nhất 1 phạm vi vai trò cho người dùng.');
+      setModalError('Vui lòng gán ít nhất 1 phạm vi vai trò cho nhân viên.');
       return;
     }
 
@@ -270,7 +333,7 @@ export function UsersAdminPage() {
         });
       } else {
         if (!row.shopId) {
-          setModalError('Phạm vi Cá nhân (Own) yêu cầu gắn với ít nhất một Shop.');
+          setModalError('Phạm vi Cá nhân yêu cầu gắn với ít nhất một Shop.');
           return;
         }
         proposals.push({
@@ -294,7 +357,7 @@ export function UsersAdminPage() {
           defaultWarehouseId: firstScoped?.warehouseId ?? null
         });
         setActionBanner(
-          `Đã phê duyệt tài khoản ${editingUser.email} và gán quyền thành công.`
+          `Đã duyệt kích hoạt tài khoản ${editingUser.email} và gán quyền thành công.`
         );
       } else {
         await updateAdminUserGrantsApi(editingUser.id, {
@@ -303,7 +366,7 @@ export function UsersAdminPage() {
           defaultWarehouseId: firstScoped?.warehouseId ?? null
         });
         setActionBanner(
-          `Đã cập nhật phạm vi quyền và làm mới dấu bảo mật phiên cho ${editingUser.email}.`
+          `Đã cập nhật quyền làm việc cho tài khoản ${editingUser.email}.`
         );
       }
 
@@ -355,7 +418,7 @@ export function UsersAdminPage() {
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : 'Không thể thu hồi phiên đăng nhập của người dùng.'
+          : 'Không thể đăng xuất tài khoản khỏi các thiết bị.'
       );
     } finally {
       setBusyUserId(null);
@@ -375,36 +438,197 @@ export function UsersAdminPage() {
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : 'Không thể khởi tạo mã đặt lại mật khẩu cho người dùng.'
+          : 'Không thể cấp mã đặt lại mật khẩu cho nhân viên.'
       );
     } finally {
       setBusyUserId(null);
     }
   };
 
+  const openCreateUserModal = () => {
+    const defaultRole =
+      assignableRoles.find((r) => r.name === 'Operator') ?? assignableRoles[0];
+    const defaultShop = shops[0];
+    const defaultWh = defaultShop?.warehouses[0];
+
+    setNewFullName('');
+    setNewEmail('');
+    setNewPassword('');
+    setShowNewPassword(false);
+    setNewRoleId(defaultRole?.id ?? '');
+    setNewShopId(defaultShop?.id ?? '');
+    setNewWarehouseId(defaultWh?.id ?? '');
+    setNewForceReset(false);
+    setCreateUserError(null);
+    setIsCreateUserOpen(true);
+  };
+
+  const handleCreateUserSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setCreateUserError(null);
+
+    const selectedRole = assignableRoles.find((r) => r.id === newRoleId);
+    if (!selectedRole) {
+      setCreateUserError('Vui lòng chọn vai trò công việc cho tài khoản mới.');
+      return;
+    }
+
+    const isSuperRole = selectedRole.name === 'SuperAdmin';
+    if (!isSuperRole && !newShopId) {
+      setCreateUserError('Vui lòng chọn Shop làm việc cho nhân viên.');
+      return;
+    }
+
+    const grant: GrantProposalDto = isSuperRole
+      ? {
+          roleId: selectedRole.id,
+          scopeType: 'All',
+          shopId: null,
+          warehouseId: null
+        }
+      : newWarehouseId
+        ? {
+            roleId: selectedRole.id,
+            scopeType: 'Warehouse',
+            shopId: newShopId,
+            warehouseId: newWarehouseId
+          }
+        : {
+            roleId: selectedRole.id,
+            scopeType: 'Shop',
+            shopId: newShopId,
+            warehouseId: null
+          };
+
+    setIsCreatingUser(true);
+    try {
+      const created = await createAdminUserApi({
+        fullName: newFullName.trim(),
+        email: newEmail.trim(),
+        password: newPassword,
+        grants: [grant],
+        defaultShopId: isSuperRole ? null : newShopId || null,
+        defaultWarehouseId: isSuperRole ? null : newWarehouseId || null,
+        forcePasswordReset: newForceReset
+      });
+      setIsCreateUserOpen(false);
+      setActionBanner(
+        `Đã tạo và kích hoạt tài khoản cho "${created.fullName}" (${created.email}). Nhân viên có thể đăng nhập làm việc ngay.`
+      );
+      await loadUsers();
+    } catch (err) {
+      setCreateUserError(
+        err instanceof Error ? err.message : 'Không thể tạo tài khoản mới.'
+      );
+    } finally {
+      setIsCreatingUser(false);
+    }
+  };
+
+  const openEditProfileModal = (target: AdminUserSummaryDto) => {
+    setProfileUser(target);
+    setEditFullName(target.fullName);
+    setEditDefaultShopId(target.defaultShopId ?? '');
+    setEditDefaultWarehouseId(target.defaultWarehouseId ?? '');
+    setProfileError(null);
+  };
+
+  const handleEditProfileSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!profileUser) {
+      return;
+    }
+    setProfileError(null);
+    setIsSavingProfile(true);
+    try {
+      await updateAdminUserProfileApi(profileUser.id, {
+        fullName: editFullName.trim(),
+        defaultShopId: editDefaultShopId || null,
+        defaultWarehouseId: editDefaultWarehouseId || null
+      });
+      setProfileUser(null);
+      setActionBanner(`Đã cập nhật thông tin tài khoản "${editFullName.trim()}".`);
+      await loadUsers();
+    } catch (err) {
+      setProfileError(
+        err instanceof Error
+          ? err.message
+          : 'Không thể cập nhật thông tin tài khoản.'
+      );
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const openDirectPwdModal = (target: AdminUserSummaryDto) => {
+    setDirectPwdUser(target);
+    setDirectPwdInput('');
+    setShowDirectPwd(false);
+    setDirectPwdForceReset(false);
+    setDirectPwdError(null);
+  };
+
+  const handleDirectPwdSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!directPwdUser) {
+      return;
+    }
+    setDirectPwdError(null);
+    setIsSettingDirectPwd(true);
+    try {
+      const res = await setAdminUserPasswordDirectApi(directPwdUser.id, {
+        newPassword: directPwdInput,
+        forcePasswordReset: directPwdForceReset
+      });
+      setDirectPwdUser(null);
+      setActionBanner(res.message);
+      await loadUsers();
+    } catch (err) {
+      setDirectPwdError(
+        err instanceof Error ? err.message : 'Không thể đặt mật khẩu mới.'
+      );
+    } finally {
+      setIsSettingDirectPwd(false);
+    }
+  };
+
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const pendingInCurrentList = users.filter(
+    (u) => u.approvalStatus === 'PendingApproval'
+  ).length;
 
   return (
-    <div>
-      <div className="surface-card">
-        <div className="page-header-row">
-          <div>
-            <h1 className="page-title">Quản trị người dùng &amp; Duyệt tài khoản</h1>
-            <p className="page-subtitle">
-              Duyệt nhân viên tự đăng ký, phân quyền theo phạm vi Shop/Kho (tuân thủ trần
-              quyền Grant Ceiling), khóa tài khoản, thu hồi phiên và cấp mã đặt lại mật
-              khẩu nội bộ.
-            </p>
-          </div>
-        </div>
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+        <PageHeader
+          title="Quản lý tài khoản — Quản trị người dùng"
+          subtitle="Tạo tài khoản nhân viên mới, duyệt đăng ký, phân công Shop / Kho và hỗ trợ đổi mật khẩu."
+          actions={
+            <button
+              type="button"
+              onClick={openCreateUserModal}
+              className="btn btn-primary inline-flex cursor-pointer items-center gap-1.5"
+            >
+              <UserPlus className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>Tạo tài khoản mới</span>
+            </button>
+          }
+        />
 
-        <div style={{ marginTop: 14 }}>
-          <div className="segmented-tabs" role="tablist" aria-label="Lọc trạng thái tài khoản">
+        {/* Status Tabs */}
+        <div className="mt-4">
+          <div
+            className="segmented-tabs"
+            role="tablist"
+            aria-label="Lọc trạng thái tài khoản"
+          >
             <button
               type="button"
               role="tab"
               aria-selected={statusFilter === ''}
-              className={`segmented-tab${statusFilter === '' ? ' active' : ''}`}
+              className={`segmented-tab cursor-pointer ${
+                statusFilter === '' ? 'active' : ''
+              }`}
               onClick={() => {
                 setStatusFilter('');
                 setPage(1);
@@ -416,22 +640,27 @@ export function UsersAdminPage() {
               type="button"
               role="tab"
               aria-selected={statusFilter === 'PendingApproval'}
-              className={`segmented-tab${
-                statusFilter === 'PendingApproval' ? ' active' : ''
+              className={`segmented-tab inline-flex cursor-pointer items-center gap-1.5 ${
+                statusFilter === 'PendingApproval' ? 'active' : ''
               }`}
               onClick={() => {
                 setStatusFilter('PendingApproval');
                 setPage(1);
               }}
             >
-              Chờ duyệt
+              <span>Chờ duyệt</span>
+              {pendingInCurrentList > 0 && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[11px] font-bold text-white">
+                  {pendingInCurrentList}
+                </span>
+              )}
             </button>
             <button
               type="button"
               role="tab"
               aria-selected={statusFilter === 'Active'}
-              className={`segmented-tab${
-                statusFilter === 'Active' ? ' active' : ''
+              className={`segmented-tab cursor-pointer ${
+                statusFilter === 'Active' ? 'active' : ''
               }`}
               onClick={() => {
                 setStatusFilter('Active');
@@ -444,8 +673,8 @@ export function UsersAdminPage() {
               type="button"
               role="tab"
               aria-selected={statusFilter === 'Locked'}
-              className={`segmented-tab${
-                statusFilter === 'Locked' ? ' active' : ''
+              className={`segmented-tab cursor-pointer ${
+                statusFilter === 'Locked' ? 'active' : ''
               }`}
               onClick={() => {
                 setStatusFilter('Locked');
@@ -457,36 +686,43 @@ export function UsersAdminPage() {
           </div>
         </div>
 
+        {/* Search & Shop Filter */}
         <form
-          style={{
-            marginTop: 14,
-            display: 'flex',
-            gap: 10,
-            flexWrap: 'wrap',
-            alignItems: 'flex-end'
-          }}
+          className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"
           onSubmit={(e) => {
             e.preventDefault();
             setPage(1);
             setAppliedQuery(searchQuery);
           }}
         >
-          <div style={{ flex: '1 1 240px' }}>
-            <label htmlFor="admin-user-search" className="form-label">
+          <div className="flex-1">
+            <label
+              htmlFor="admin-user-search"
+              className="mb-1 block text-xs font-semibold text-slate-700"
+            >
               Tìm theo họ tên hoặc email
             </label>
-            <input
-              id="admin-user-search"
-              type="text"
-              className="form-input"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Ví dụ: operator@congty.vn"
-            />
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400"
+                aria-hidden="true"
+              />
+              <input
+                id="admin-user-search"
+                type="text"
+                className="form-input pl-10"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Nhập họ tên hoặc email nhân viên..."
+              />
+            </div>
           </div>
 
-          <div style={{ minWidth: 210 }}>
-            <label htmlFor="admin-user-shop-filter" className="form-label">
+          <div className="sm:w-56">
+            <label
+              htmlFor="admin-user-shop-filter"
+              className="mb-1 block text-xs font-semibold text-slate-700"
+            >
               Lọc theo Shop
             </label>
             <select
@@ -507,33 +743,51 @@ export function UsersAdminPage() {
             </select>
           </div>
 
-          <button type="submit" className="btn btn-primary">
-            Lọc danh sách
+          <button
+            type="submit"
+            className="btn btn-primary inline-flex items-center justify-center gap-1.5"
+          >
+            <Search className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>Lọc danh sách</span>
           </button>
         </form>
       </div>
 
       {actionBanner && (
-        <div className="alert alert-success" role="status">
-          {actionBanner}
+        <div
+          className="flex items-start gap-2.5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950"
+          role="status"
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <span>{actionBanner}</span>
         </div>
       )}
 
       {errorMsg && (
-        <div className="alert alert-error" role="alert">
-          {errorMsg}
+        <div
+          className="flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900"
+          role="alert"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+          <span>{errorMsg}</span>
         </div>
       )}
 
-      <div className="surface-card">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
         {isLoading ? (
-          <div role="status" style={{ color: 'var(--color-text-muted)' }}>
-            Đang tải danh sách tài khoản...
+          <div
+            className="flex items-center justify-center gap-2.5 py-8 text-sm font-medium text-slate-600"
+            role="status"
+          >
+            <Loader2 className="h-5 w-5 animate-spin text-blue-600" aria-hidden="true" />
+            <span>Đang tải danh sách nhân sự...</span>
           </div>
         ) : users.length === 0 ? (
-          <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-            Không có tài khoản nào khớp với bộ lọc hiện tại.
-          </p>
+          <EmptyState
+            icon={<Users className="h-6 w-6" />}
+            title="Không tìm thấy tài khoản nào"
+            description="Hiện chưa có nhân sự nào khớp với điều kiện lọc."
+          />
         ) : (
           <>
             <div className="desktop-table-wrap">
@@ -541,10 +795,10 @@ export function UsersAdminPage() {
                 <thead>
                   <tr>
                     <th>Nhân viên</th>
-                    <th>Trạng thái &amp; Bảo mật</th>
-                    <th>Vai trò &amp; Phạm vi được cấp</th>
-                    <th>Thời gian tạo</th>
-                    <th>Quản trị</th>
+                    <th>Trạng thái</th>
+                    <th>Vai trò &amp; Khu vực làm việc</th>
+                    <th>Ngày đăng ký</th>
+                    <th>Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -556,16 +810,12 @@ export function UsersAdminPage() {
                     return (
                       <tr key={u.id}>
                         <td>
-                          <strong>{u.fullName}</strong>
-                          <div
-                            style={{
-                              fontSize: '0.84rem',
-                              color: 'var(--color-text-muted)'
-                            }}
-                          >
-                            {u.email}
+                          <div className="font-semibold text-slate-900">
+                            {u.fullName}
                           </div>
+                          <div className="text-xs text-slate-500">{u.email}</div>
                         </td>
+
                         <td>
                           <div className="badge-cluster">
                             <span className={statusBadge.className}>
@@ -573,7 +823,7 @@ export function UsersAdminPage() {
                             </span>
                             {u.twoFactorEnabled && (
                               <span className="status-pill status-pill-ready">
-                                Đã bật 2FA
+                                Bảo mật 2 lớp
                               </span>
                             )}
                             {u.forcePasswordReset && (
@@ -583,105 +833,136 @@ export function UsersAdminPage() {
                             )}
                           </div>
                         </td>
+
                         <td>
                           {u.grants.length === 0 ? (
-                            <span
-                              style={{
-                                fontSize: '0.84rem',
-                                color: 'var(--color-text-muted)'
-                              }}
-                            >
-                              Chưa gán vai trò
+                            <span className="text-xs text-slate-400">
+                              Chưa phân công vai trò
                             </span>
                           ) : (
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 4,
-                                fontSize: '0.84rem'
-                              }}
-                            >
-                              {u.grants.map((g) => (
-                                <div key={g.id}>
-                                  <strong>{g.roleName}</strong> •{' '}
-                                  {getScopeTypeLabel(g.scopeType)}
-                                  {g.shopName ? ` (${g.shopName}` : ''}
-                                  {g.shopName && g.warehouseName
-                                    ? ` / ${g.warehouseName})`
-                                    : g.shopName
-                                      ? ')'
-                                      : ''}
-                                </div>
-                              ))}
+                            <div className="space-y-1 text-xs">
+                              {u.grants.map((g) => {
+                                const friendlyRole =
+                                  SYSTEM_ROLE_VIETNAMESE_TITLES[g.roleName];
+                                return (
+                                  <div key={g.id} className="text-slate-700">
+                                    <strong className="text-slate-900">
+                                      {g.roleName}
+                                    </strong>
+                                    {friendlyRole ? ` (${friendlyRole})` : ''} •{' '}
+                                    {getScopeTypeLabel(g.scopeType)}
+                                    {g.shopName ? ` — ${g.shopName}` : ''}
+                                    {g.warehouseName ? ` / ${g.warehouseName}` : ''}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </td>
-                        <td>{formatHoChiMinhDateTime(u.createdAtUtc)}</td>
+
+                        <td className="whitespace-nowrap text-xs text-slate-600">
+                          {formatHoChiMinhDateTime(u.createdAtUtc)}
+                        </td>
+
                         <td>
-                          <div className="badge-cluster">
+                          <div className="flex flex-wrap items-center gap-2">
                             {u.approvalStatus === 'PendingApproval' ? (
                               <button
                                 type="button"
-                                className="btn btn-primary"
-                                style={{ padding: '6px 12px' }}
+                                className="btn btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
                                 disabled={isBusy}
                                 onClick={() => openGrantsModal(u, 'approve')}
                               >
-                                Duyệt &amp; Gán quyền
+                                <UserCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                <span>Duyệt &amp; Gán quyền</span>
                               </button>
                             ) : (
                               <button
                                 type="button"
-                                className="btn btn-outline"
-                                style={{ padding: '6px 12px' }}
+                                className="btn btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
                                 disabled={isBusy || isSelf}
                                 onClick={() => openGrantsModal(u, 'grants')}
                               >
-                                Phân quyền
-                              </button>
-                            )}
-
-                            {!isSelf && u.approvalStatus !== 'PendingApproval' && (
-                              <button
-                                type="button"
-                                className={`btn ${
-                                  u.approvalStatus === 'Locked' || u.isLockedOut
-                                    ? 'btn-navy'
-                                    : 'btn-danger'
-                                }`}
-                                style={{ padding: '6px 12px' }}
-                                disabled={isBusy}
-                                onClick={() => void handleLockToggle(u)}
-                              >
-                                {u.approvalStatus === 'Locked' || u.isLockedOut
-                                  ? 'Mở khóa'
-                                  : 'Khóa'}
-                              </button>
-                            )}
-
-                            {!isSelf && u.approvalStatus === 'Active' && (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                style={{ padding: '6px 12px' }}
-                                disabled={isBusy}
-                                onClick={() => void handleRevokeSessions(u)}
-                              >
-                                Thu hồi phiên
+                                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                <span>Phân quyền</span>
                               </button>
                             )}
 
                             {!isSelf && (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                style={{ padding: '6px 12px' }}
-                                disabled={isBusy}
-                                onClick={() => void handleInitiatePasswordReset(u)}
-                              >
-                                Cấp mã đổi MK
-                              </button>
+                              <details className="relative">
+                                <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                                  <span>Khác</span>
+                                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                                </summary>
+                                <div className="mt-1.5 flex flex-col gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-md">
+                                  <button
+                                    type="button"
+                                    className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                    disabled={isBusy}
+                                    onClick={() => openEditProfileModal(u)}
+                                  >
+                                    <Edit3 className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+                                    <span>Sửa họ tên &amp; Kho mặc định</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                    disabled={isBusy}
+                                    onClick={() => openDirectPwdModal(u)}
+                                  >
+                                    <KeyRound className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+                                    <span>Đặt mật khẩu mới trực tiếp</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                    disabled={isBusy}
+                                    onClick={() => void handleInitiatePasswordReset(u)}
+                                  >
+                                    <KeyRound className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+                                    <span>Cấp mã đổi mật khẩu 1 lần</span>
+                                  </button>
+
+                                  {u.approvalStatus === 'Active' && (
+                                    <button
+                                      type="button"
+                                      className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                      disabled={isBusy}
+                                      onClick={() => void handleRevokeSessions(u)}
+                                    >
+                                      <LogOut className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+                                      <span>Đăng xuất mọi thiết bị</span>
+                                    </button>
+                                  )}
+
+                                  {u.approvalStatus !== 'PendingApproval' && (
+                                    <button
+                                      type="button"
+                                      className={`inline-flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold hover:bg-slate-100 disabled:opacity-50 ${
+                                        u.approvalStatus === 'Locked' || u.isLockedOut
+                                          ? 'text-emerald-700'
+                                          : 'text-red-600'
+                                      }`}
+                                      disabled={isBusy}
+                                      onClick={() => void handleLockToggle(u)}
+                                    >
+                                      {u.approvalStatus === 'Locked' || u.isLockedOut ? (
+                                        <>
+                                          <Unlock className="h-3.5 w-3.5" aria-hidden="true" />
+                                          <span>Mở khóa tài khoản</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                                          <span>Khóa tài khoản</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  )}
+                                </div>
+                              </details>
                             )}
                           </div>
                         </td>
@@ -700,26 +981,19 @@ export function UsersAdminPage() {
 
                 return (
                   <div key={u.id} className="mobile-data-card">
-                    <div className="page-header-row">
+                    <div className="flex items-start justify-between gap-2">
                       <div>
-                        <strong>{u.fullName}</strong>
-                        <div
-                          style={{
-                            fontSize: '0.84rem',
-                            color: 'var(--color-text-muted)'
-                          }}
-                        >
-                          {u.email}
-                        </div>
+                        <strong className="text-slate-900">{u.fullName}</strong>
+                        <div className="text-xs text-slate-500">{u.email}</div>
                       </div>
                       <span className={statusBadge.className}>
                         {statusBadge.label}
                       </span>
                     </div>
 
-                    <div style={{ fontSize: '0.85rem' }}>
+                    <div className="text-xs text-slate-700">
                       {u.grants.length === 0
-                        ? 'Chưa được gán phạm vi vai trò.'
+                        ? 'Chưa được phân công vai trò.'
                         : u.grants
                             .map(
                               (g) =>
@@ -730,11 +1004,11 @@ export function UsersAdminPage() {
                             .join(' • ')}
                     </div>
 
-                    <div className="badge-cluster">
+                    <div className="flex flex-wrap gap-2 pt-1">
                       {u.approvalStatus === 'PendingApproval' ? (
                         <button
                           type="button"
-                          className="btn btn-primary"
+                          className="btn btn-primary text-xs"
                           disabled={isBusy}
                           onClick={() => openGrantsModal(u, 'approve')}
                         >
@@ -743,7 +1017,7 @@ export function UsersAdminPage() {
                       ) : (
                         <button
                           type="button"
-                          className="btn btn-outline"
+                          className="btn btn-outline text-xs"
                           disabled={isBusy || isSelf}
                           onClick={() => openGrantsModal(u, 'grants')}
                         >
@@ -754,7 +1028,7 @@ export function UsersAdminPage() {
                       {!isSelf && u.approvalStatus !== 'PendingApproval' && (
                         <button
                           type="button"
-                          className="btn btn-outline"
+                          className="btn btn-outline text-xs"
                           disabled={isBusy}
                           onClick={() => void handleLockToggle(u)}
                         >
@@ -765,14 +1039,24 @@ export function UsersAdminPage() {
                       )}
 
                       {!isSelf && (
-                        <button
-                          type="button"
-                          className="btn btn-outline"
-                          disabled={isBusy}
-                          onClick={() => void handleInitiatePasswordReset(u)}
-                        >
-                          Cấp mã đổi MK
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-outline text-xs"
+                            disabled={isBusy}
+                            onClick={() => openEditProfileModal(u)}
+                          >
+                            Sửa thông tin
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline text-xs"
+                            disabled={isBusy}
+                            onClick={() => openDirectPwdModal(u)}
+                          >
+                            Đặt mật khẩu mới
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -781,25 +1065,27 @@ export function UsersAdminPage() {
             </div>
 
             {totalPages > 1 && (
-              <div className="pagination-bar">
+              <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3.5">
                 <button
                   type="button"
-                  className="btn btn-outline"
+                  className="btn btn-outline inline-flex items-center gap-1 text-xs"
                   disabled={page <= 1}
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                 >
-                  Trang trước
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                  <span>Trang trước</span>
                 </button>
-                <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>
+                <span className="text-xs font-semibold text-slate-700">
                   Trang {page} / {totalPages}
                 </span>
                 <button
                   type="button"
-                  className="btn btn-outline"
+                  className="btn btn-outline inline-flex items-center gap-1 text-xs"
                   disabled={page >= totalPages}
                   onClick={() => setPage((p) => p + 1)}
                 >
-                  Trang sau
+                  <span>Trang sau</span>
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
             )}
@@ -807,7 +1093,7 @@ export function UsersAdminPage() {
         )}
       </div>
 
-      {/* Approve / Edit Grants Modal */}
+      {/* Approve / Edit Grants Modal (Exact 3-select order preserved for Playwright E2E) */}
       {editingUser && (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -816,21 +1102,34 @@ export function UsersAdminPage() {
             aria-modal="true"
             aria-labelledby="user-grants-modal-title"
           >
-            <h2
-              id="user-grants-modal-title"
-              style={{ marginTop: 0, fontSize: '1.16rem' }}
-            >
-              {modalMode === 'approve'
-                ? `Duyệt & Phân quyền cho ${editingUser.fullName}`
-                : `Cập nhật vai trò & phạm vi cho ${editingUser.fullName}`}
-            </h2>
-            <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)' }}>
-              Tài khoản: <strong>{editingUser.email}</strong>. Bạn chỉ có thể gán các vai
-              trò và phạm vi nằm trong giới hạn quyền hạn hiện có của mình (Grant Ceiling).
-            </p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2
+                  id="user-grants-modal-title"
+                  className="m-0 text-base font-bold text-slate-900 sm:text-lg"
+                >
+                  {modalMode === 'approve'
+                    ? `Duyệt & Phân quyền cho ${editingUser.fullName}`
+                    : `Cập nhật quyền làm việc cho ${editingUser.fullName}`}
+                </h2>
+                <p className="mt-0.5 mb-0 text-xs text-slate-600">
+                  Tài khoản: <strong>{editingUser.email}</strong> — Chọn công việc và
+                  Shop / Kho được phép truy cập.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                onClick={() => setEditingUser(null)}
+                disabled={isSavingGrants}
+                aria-label="Đóng hộp thoại"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
 
-            <form onSubmit={(e) => void handleSaveGrantsSubmit(e)}>
-              <div className="mobile-card-list" style={{ marginBottom: 12 }}>
+            <form className="mt-4" onSubmit={(e) => void handleSaveGrantsSubmit(e)}>
+              <div className="space-y-3">
                 {grantRows.map((row, idx) => {
                   const selectedShop = shops.find((s) => s.id === row.shopId);
                   const whList = selectedShop?.warehouses ?? [];
@@ -840,28 +1139,38 @@ export function UsersAdminPage() {
                   const canSelectAllScope =
                     Boolean(currentUser?.isSuperAdmin) &&
                     selectedRole?.name === 'SuperAdmin';
+                  const friendlyRoleTitle = selectedRole
+                    ? SYSTEM_ROLE_VIETNAMESE_TITLES[selectedRole.name]
+                    : undefined;
 
                   return (
-                    <div key={row.rowKey} className="mobile-data-card">
-                      <div className="page-header-row">
-                        <strong>Phạm vi phân quyền #{idx + 1}</strong>
+                    <div
+                      key={row.rowKey}
+                      className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5"
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <strong className="text-xs font-bold text-slate-800 uppercase">
+                          Phân công khu vực #{idx + 1}
+                        </strong>
                         {grantRows.length > 1 && (
                           <button
                             type="button"
-                            className="btn btn-outline"
-                            style={{ padding: '4px 10px', minHeight: 36 }}
+                            className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
                             onClick={() => handleRemoveGrantRow(row.rowKey)}
                           >
-                            Xóa dòng
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>Xóa dòng</span>
                           </button>
                         )}
                       </div>
 
-                      <div className="shop-warehouse-grid">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
-                          <label className="form-label">Vai trò</label>
+                          <label className="mb-1 block text-xs font-semibold text-slate-700">
+                            Vai trò công việc
+                          </label>
                           <select
-                            className="form-input"
+                            className="form-input bg-white"
                             value={row.roleId}
                             onChange={(e) =>
                               handleUpdateGrantRow(row.rowKey, {
@@ -876,12 +1185,19 @@ export function UsersAdminPage() {
                               </option>
                             ))}
                           </select>
+                          {friendlyRoleTitle && (
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              Chức danh: <strong>{friendlyRoleTitle}</strong>
+                            </div>
+                          )}
                         </div>
 
                         <div>
-                          <label className="form-label">Cấp độ phạm vi</label>
+                          <label className="mb-1 block text-xs font-semibold text-slate-700">
+                            Phạm vi dữ liệu được xem
+                          </label>
                           <select
-                            className="form-input"
+                            className="form-input bg-white"
                             value={row.scopeType}
                             onChange={(e) =>
                               handleUpdateGrantRow(row.rowKey, {
@@ -890,15 +1206,15 @@ export function UsersAdminPage() {
                             }
                           >
                             <option value="Own">
-                              Cá nhân — Chỉ bản ghi của chính mình (Own)
+                              Cá nhân — Chỉ đơn do chính mình quay
                             </option>
                             <option value="Warehouse">
-                              Theo Kho cụ thể (Warehouse)
+                              Theo Kho cụ thể
                             </option>
-                            <option value="Shop">Theo toàn bộ Shop (Shop)</option>
+                            <option value="Shop">Theo toàn bộ Shop</option>
                             {canSelectAllScope && (
                               <option value="All">
-                                Toàn hệ thống (Chỉ SuperAdmin)
+                                Toàn hệ thống (Quản trị cao nhất)
                               </option>
                             )}
                           </select>
@@ -906,9 +1222,11 @@ export function UsersAdminPage() {
 
                         {row.scopeType !== 'All' && (
                           <div>
-                            <label className="form-label">Shop áp dụng</label>
+                            <label className="mb-1 block text-xs font-semibold text-slate-700">
+                              Shop áp dụng
+                            </label>
                             <select
-                              className="form-input"
+                              className="form-input bg-white"
                               value={row.shopId}
                               onChange={(e) =>
                                 handleUpdateGrantRow(row.rowKey, {
@@ -929,12 +1247,12 @@ export function UsersAdminPage() {
                         {(row.scopeType === 'Warehouse' ||
                           row.scopeType === 'Own') && (
                           <div>
-                            <label className="form-label">
-                              Kho áp dụng{' '}
+                            <label className="mb-1 block text-xs font-semibold text-slate-700">
+                              Kho đóng gói{' '}
                               {row.scopeType === 'Own' ? '(Tùy chọn)' : '(Bắt buộc)'}
                             </label>
                             <select
-                              className="form-input"
+                              className="form-input bg-white"
                               value={row.warehouseId}
                               onChange={(e) =>
                                 handleUpdateGrantRow(row.rowKey, {
@@ -961,19 +1279,24 @@ export function UsersAdminPage() {
 
               <button
                 type="button"
-                className="btn btn-outline"
+                className="btn btn-outline mt-3 inline-flex items-center gap-1.5 text-xs"
                 onClick={handleAddGrantRow}
               >
-                + Thêm phạm vi vai trò
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Thêm khu vực làm việc khác</span>
               </button>
 
               {modalError && (
-                <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
-                  {modalError}
+                <div
+                  className="mt-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900"
+                  role="alert"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+                  <span>{modalError}</span>
                 </div>
               )}
 
-              <div className="modal-actions">
+              <div className="modal-actions mt-5">
                 <button
                   type="button"
                   className="btn btn-outline"
@@ -1003,37 +1326,50 @@ export function UsersAdminPage() {
       {resetResult && (
         <div className="modal-backdrop" role="presentation">
           <div
-            className="modal-card modal-card-wide"
+            className="modal-card max-w-lg"
             role="dialog"
             aria-modal="true"
             aria-labelledby="reset-token-modal-title"
           >
-            <h2
-              id="reset-token-modal-title"
-              style={{ marginTop: 0, fontSize: '1.15rem' }}
-            >
-              Mã đặt lại mật khẩu một lần (Nội bộ an toàn)
-            </h2>
-            <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)' }}>
-              {resetResult.message}
-            </p>
-
-            <div className="alert alert-warning">
-              <strong>Lưu ý bảo mật:</strong> Mã này chỉ hiển thị một lần duy nhất trên
-              màn hình HTTPS hiện tại và không được lưu dạng rõ trong nhật ký hệ thống.
-              Nhân viên nhập mã này tại trang <code>/reset-password</code> cùng địa chỉ
-              email <strong>{resetResult.email}</strong>.
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                <KeyRound className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <h2
+                  id="reset-token-modal-title"
+                  className="m-0 text-base font-bold text-slate-900"
+                >
+                  Mã đặt lại mật khẩu một lần
+                </h2>
+                <p className="mt-0.5 mb-0 text-xs text-slate-600">
+                  {resetResult.message}
+                </p>
+              </div>
             </div>
 
-            <div className="form-group">
-              <div className="form-label">Mã khôi phục một lần</div>
-              <div className="code-box">{resetResult.resetToken}</div>
+            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+              <div>
+                <strong>Lưu ý:</strong> Mã này chỉ hiện một lần duy nhất. Hãy sao chép và
+                gửi cho nhân viên nhập tại trang Đặt lại mật khẩu cùng email{' '}
+                <strong>{resetResult.email}</strong>.
+              </div>
             </div>
 
-            <div className="modal-actions">
+            <div className="mt-4">
+              <div className="mb-1.5 text-xs font-semibold text-slate-700">
+                Mã khôi phục một lần
+              </div>
+              <div className="code-box select-all font-mono text-sm">
+                {resetResult.resetToken}
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
-                className="btn btn-navy"
+                className="btn btn-navy inline-flex items-center gap-1.5"
                 onClick={async () => {
                   if (navigator.clipboard?.writeText) {
                     await navigator.clipboard.writeText(resetResult.resetToken);
@@ -1041,16 +1377,551 @@ export function UsersAdminPage() {
                   }
                 }}
               >
-                {copiedToken ? 'Đã sao chép mã!' : 'Sao chép mã khôi phục'}
+                {copiedToken ? (
+                  <>
+                    <Check className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+                    <span>Đã sao chép mã!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                    <span>Sao chép mã khôi phục</span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => setResetResult(null)}
               >
-                Đã ghi nhận &amp; Đóng
+                Đã gửi &amp; Đóng
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Create Account Modal */}
+      {isCreateUserOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isCreatingUser) {
+              setIsCreateUserOpen(false);
+            }
+          }}
+        >
+          <div
+            className="modal-card modal-card-wide max-h-[90vh] overflow-y-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-user-modal-title"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
+              <div>
+                <h2
+                  id="create-user-modal-title"
+                  className="m-0 text-lg font-bold text-slate-900"
+                >
+                  Tạo tài khoản nhân viên mới
+                </h2>
+                <p className="mt-0.5 mb-0 text-xs text-slate-600">
+                  Tài khoản được kích hoạt ngay lập tức — nhân viên có thể đăng nhập làm việc ngay mà không cần chờ duyệt.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateUserOpen(false)}
+                disabled={isCreatingUser}
+                className="inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                aria-label="Đóng"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={(e) => void handleCreateUserSubmit(e)}
+            >
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="create-user-fullname"
+                    className="mb-1 block text-xs font-semibold text-slate-700"
+                  >
+                    Họ và tên nhân viên <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    id="create-user-fullname"
+                    type="text"
+                    className="form-input"
+                    maxLength={200}
+                    value={newFullName}
+                    onChange={(e) => setNewFullName(e.target.value)}
+                    placeholder="Ví dụ: Nguyễn Văn An"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="create-user-email"
+                    className="mb-1 block text-xs font-semibold text-slate-700"
+                  >
+                    Email đăng nhập <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    id="create-user-email"
+                    type="email"
+                    className="form-input"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="Ví dụ: an.nguyen@shop.vn"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="create-user-password"
+                  className="mb-1 block text-xs font-semibold text-slate-700"
+                >
+                  Mật khẩu khởi tạo <span className="text-red-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="create-user-password"
+                    type={showNewPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    className="form-input pr-12"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Ví dụ: NhanVien@2026"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword((v) => !v)}
+                    className="absolute top-1/2 right-1 inline-flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                    aria-label={showNewPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  >
+                    {showNewPassword ? (
+                      <EyeOff className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  Mật khẩu cần tối thiểu 8 ký tự, gồm chữ hoa, chữ thường, chữ số và ký tự đặc biệt (@, #, !...).
+                </span>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
+                <div className="mb-3 text-xs font-bold text-slate-800">
+                  Phân công Vai trò &amp; Nơi làm việc
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div>
+                    <label
+                      htmlFor="create-user-role"
+                      className="mb-1 block text-xs font-semibold text-slate-700"
+                    >
+                      Vai trò công việc
+                    </label>
+                    <select
+                      id="create-user-role"
+                      className="form-input bg-white"
+                      value={newRoleId}
+                      onChange={(e) => setNewRoleId(e.target.value)}
+                      required
+                    >
+                      {assignableRoles.map((r) => {
+                        const vnTitle = SYSTEM_ROLE_VIETNAMESE_TITLES[r.name];
+                        return (
+                          <option key={r.id} value={r.id}>
+                            {vnTitle ? `${vnTitle} (${r.name})` : r.name}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {assignableRoles.find((r) => r.id === newRoleId)?.name !==
+                    'SuperAdmin' && (
+                    <>
+                      <div>
+                        <label
+                          htmlFor="create-user-shop"
+                          className="mb-1 block text-xs font-semibold text-slate-700"
+                        >
+                          Thuộc Shop
+                        </label>
+                        <select
+                          id="create-user-shop"
+                          className="form-input bg-white"
+                          value={newShopId}
+                          onChange={(e) => {
+                            const nextShopId = e.target.value;
+                            setNewShopId(nextShopId);
+                            const foundShop = shops.find(
+                              (s) => s.id === nextShopId
+                            );
+                            setNewWarehouseId(
+                              foundShop?.warehouses[0]?.id ?? ''
+                            );
+                          }}
+                          required
+                        >
+                          <option value="">-- Chọn Shop --</option>
+                          {shops.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} ({s.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="create-user-warehouse"
+                          className="mb-1 block text-xs font-semibold text-slate-700"
+                        >
+                          Kho đóng gói
+                        </label>
+                        <select
+                          id="create-user-warehouse"
+                          className="form-input bg-white"
+                          value={newWarehouseId}
+                          onChange={(e) => setNewWarehouseId(e.target.value)}
+                        >
+                          <option value="">Toàn bộ các Kho trong Shop</option>
+                          {(
+                            shops.find((s) => s.id === newShopId)?.warehouses ??
+                            []
+                          ).map((wh) => (
+                            <option key={wh.id} value={wh.id}>
+                              {wh.name} ({wh.code})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <label className="flex cursor-pointer items-center gap-2.5 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 accent-blue-600"
+                  checked={newForceReset}
+                  onChange={(e) => setNewForceReset(e.target.checked)}
+                />
+                <span>
+                  Đánh dấu nhắc nhân viên tự đổi sang mật khẩu riêng sau khi nhận tài khoản
+                </span>
+              </label>
+
+              {createUserError && (
+                <div
+                  className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900"
+                  role="alert"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+                  <span>{createUserError}</span>
+                </div>
+              )}
+
+              <div className="modal-actions border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  className="btn btn-outline cursor-pointer"
+                  onClick={() => setIsCreateUserOpen(false)}
+                  disabled={isCreatingUser}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary cursor-pointer"
+                  disabled={isCreatingUser}
+                >
+                  {isCreatingUser ? 'Đang tạo tài khoản...' : 'Tạo & Kích hoạt ngay'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Profile & Default Warehouse Modal */}
+      {profileUser && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSavingProfile) {
+              setProfileUser(null);
+            }
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-profile-modal-title"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-3">
+              <div>
+                <h2
+                  id="edit-profile-modal-title"
+                  className="m-0 text-lg font-bold text-slate-900"
+                >
+                  Sửa thông tin tài khoản
+                </h2>
+                <p className="mt-0.5 mb-0 text-xs text-slate-500">
+                  {profileUser.email}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileUser(null)}
+                disabled={isSavingProfile}
+                className="inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                aria-label="Đóng"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={(e) => void handleEditProfileSubmit(e)}
+            >
+              <div>
+                <label
+                  htmlFor="edit-user-fullname"
+                  className="mb-1 block text-xs font-semibold text-slate-700"
+                >
+                  Họ và tên <span className="text-red-600">*</span>
+                </label>
+                <input
+                  id="edit-user-fullname"
+                  type="text"
+                  className="form-input"
+                  maxLength={200}
+                  value={editFullName}
+                  onChange={(e) => setEditFullName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="edit-user-default-shop"
+                  className="mb-1 block text-xs font-semibold text-slate-700"
+                >
+                  Shop làm việc mặc định khi mở máy quay
+                </label>
+                <select
+                  id="edit-user-default-shop"
+                  className="form-input"
+                  value={editDefaultShopId}
+                  onChange={(e) => {
+                    setEditDefaultShopId(e.target.value);
+                    setEditDefaultWarehouseId('');
+                  }}
+                >
+                  <option value="">-- Tự động theo phân quyền --</option>
+                  {shops.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {editDefaultShopId && (
+                <div>
+                  <label
+                    htmlFor="edit-user-default-wh"
+                    className="mb-1 block text-xs font-semibold text-slate-700"
+                  >
+                    Kho đóng gói mặc định
+                  </label>
+                  <select
+                    id="edit-user-default-wh"
+                    className="form-input"
+                    value={editDefaultWarehouseId}
+                    onChange={(e) => setEditDefaultWarehouseId(e.target.value)}
+                  >
+                    <option value="">-- Tự động chọn kho đầu tiên --</option>
+                    {(
+                      shops.find((s) => s.id === editDefaultShopId)
+                        ?.warehouses ?? []
+                    ).map((wh) => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name} ({wh.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {profileError && (
+                <div
+                  className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900"
+                  role="alert"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+                  <span>{profileError}</span>
+                </div>
+              )}
+
+              <div className="modal-actions border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  className="btn btn-outline cursor-pointer"
+                  onClick={() => setProfileUser(null)}
+                  disabled={isSavingProfile}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary cursor-pointer"
+                  disabled={isSavingProfile}
+                >
+                  {isSavingProfile ? 'Đang lưu...' : 'Lưu thông tin'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Set Password Modal (1-Step for Non-Tech Staff) */}
+      {directPwdUser && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isSettingDirectPwd) {
+              setDirectPwdUser(null);
+            }
+          }}
+        >
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="direct-pwd-modal-title"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-3">
+              <div>
+                <h2
+                  id="direct-pwd-modal-title"
+                  className="m-0 text-lg font-bold text-slate-900"
+                >
+                  Đặt mật khẩu mới cho nhân viên
+                </h2>
+                <p className="mt-0.5 mb-0 text-xs text-slate-500">
+                  {directPwdUser.fullName} ({directPwdUser.email})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDirectPwdUser(null)}
+                disabled={isSettingDirectPwd}
+                className="inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                aria-label="Đóng"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={(e) => void handleDirectPwdSubmit(e)}
+            >
+              <div>
+                <label
+                  htmlFor="direct-new-password"
+                  className="mb-1 block text-xs font-semibold text-slate-700"
+                >
+                  Nhập mật khẩu mới <span className="text-red-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="direct-new-password"
+                    type={showDirectPwd ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    className="form-input pr-12"
+                    value={directPwdInput}
+                    onChange={(e) => setDirectPwdInput(e.target.value)}
+                    placeholder="Ví dụ: KhoMoi@2026"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectPwd((v) => !v)}
+                    className="absolute top-1/2 right-1 inline-flex h-11 w-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                    aria-label={showDirectPwd ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                  >
+                    {showDirectPwd ? (
+                      <EyeOff className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  Tối thiểu 8 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt. Các thiết bị cũ của nhân viên sẽ tự động đăng xuất.
+                </span>
+              </div>
+
+              <label className="flex cursor-pointer items-center gap-2.5 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 accent-blue-600"
+                  checked={directPwdForceReset}
+                  onChange={(e) => setDirectPwdForceReset(e.target.checked)}
+                />
+                <span>Nhắc nhân viên tự đổi mật khẩu sau khi đăng nhập</span>
+              </label>
+
+              {directPwdError && (
+                <div
+                  className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900"
+                  role="alert"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+                  <span>{directPwdError}</span>
+                </div>
+              )}
+
+              <div className="modal-actions border-t border-slate-200 pt-4">
+                <button
+                  type="button"
+                  className="btn btn-outline cursor-pointer"
+                  onClick={() => setDirectPwdUser(null)}
+                  disabled={isSettingDirectPwd}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary cursor-pointer"
+                  disabled={isSettingDirectPwd}
+                >
+                  {isSettingDirectPwd ? 'Đang lưu...' : 'Lưu mật khẩu mới'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

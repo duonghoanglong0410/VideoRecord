@@ -80,7 +80,10 @@ describe('Phase 2 IndexedDB SerializedChunkWriter, Crash Recovery & Multi-User I
     for (let i = 0; i < sizes.length; i += 1) {
       expect(storedChunks[i].seq).toBe(i);
       expect(storedChunks[i].byteLength).toBe(sizes[i]);
-      const view = new Uint8Array(storedChunks[i].data);
+      const rawBuffer = storedChunks[i].blob
+        ? await storedChunks[i].blob!.arrayBuffer()
+        : storedChunks[i].data!;
+      const view = new Uint8Array(rawBuffer);
       expect(view[0]).toBe(i + 1);
       expect(view[view.length - 1]).toBe(i + 1);
     }

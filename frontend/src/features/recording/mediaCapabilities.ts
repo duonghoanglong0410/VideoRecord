@@ -6,16 +6,37 @@ import {
 } from '../upload-queue/db/storageQuota';
 
 export const PREFERRED_VIDEO_MIME_TYPES = [
-  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  'video/mp4;codecs=avc1.42E01E',
-  'video/mp4;codecs=avc1',
+  'video/mp4;codecs=avc1.640028',
+  'video/mp4;codecs=avc1.64002A',
+  'video/mp4;codecs=avc1.4D0028',
+  'video/mp4;codecs=avc1.4D002A',
+  'video/mp4;codecs=hvc1.1.6.L120.90',
+  'video/mp4;codecs=hev1.1.6.L120.90',
+  'video/mp4;codecs=avc1.42E02A',
   'video/mp4',
-  'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8,opus',
+  'video/webm;codecs=h264',
   'video/webm;codecs=vp8',
+  'video/webm;codecs=vp9',
   'video/webm'
 ] as const;
+
+export const PREFERRED_VIDEO_AUDIO_MIME_TYPES = [
+  'video/mp4;codecs=avc1.640028,mp4a.40.2',
+  'video/mp4;codecs=avc1.64002A,mp4a.40.2',
+  'video/mp4;codecs=avc1.4D0028,mp4a.40.2',
+  'video/mp4;codecs=avc1.4D002A,mp4a.40.2',
+  'video/mp4;codecs=hvc1.1.6.L120.90,mp4a.40.2',
+  'video/mp4;codecs=hev1.1.6.L120.90,mp4a.40.2',
+  'video/mp4;codecs=avc1.42E02A,mp4a.40.2',
+  'video/mp4',
+  'video/webm;codecs=h264,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm;codecs=vp9,opus',
+  'video/webm'
+] as const;
+
+export type RecordingQualityTier = '720p' | '1080p';
+export type RecordingOrientationMode = 'portrait' | 'landscape';
 
 export interface MimeNegotiationResult {
   mediaRecorderAvailable: boolean;
@@ -44,6 +65,9 @@ export interface VideoInputDeviceOption {
 export interface AcquireRecordingStreamOptions {
   deviceId?: string;
   enableAudio?: boolean;
+  preferredTier?: RecordingQualityTier;
+  orientation?: RecordingOrientationMode;
+  maxDimensions?: { width: number; height: number };
 }
 
 export interface AcquiredRecordingStream {
@@ -53,7 +77,7 @@ export interface AcquiredRecordingStream {
   audioFallbackWarning: string | null;
 }
 
-export function negotiateSupportedMimeType(): MimeNegotiationResult {
+export function negotiateSupportedMimeType(enableAudio = false): MimeNegotiationResult {
   if (typeof MediaRecorder === 'undefined') {
     return {
       mediaRecorderAvailable: false,
@@ -70,7 +94,11 @@ export function negotiateSupportedMimeType(): MimeNegotiationResult {
     };
   }
 
-  for (const candidate of PREFERRED_VIDEO_MIME_TYPES) {
+  const candidates = enableAudio
+    ? PREFERRED_VIDEO_AUDIO_MIME_TYPES
+    : PREFERRED_VIDEO_MIME_TYPES;
+
+  for (const candidate of candidates) {
     try {
       if (MediaRecorder.isTypeSupported(candidate)) {
         return {
@@ -172,18 +200,30 @@ export async function listVideoInputDevices(): Promise<VideoInputDeviceOption[]>
 
 function buildVideoConstraint(
   tier: '1080p' | '720p' | 'fallback',
-  deviceId?: string
+  deviceId?: string,
+  maxDimensions?: { width: number; height: number }
 ): MediaTrackConstraints {
   const baseDevice: MediaTrackConstraints = deviceId
     ? { deviceId: { exact: deviceId } }
     : { facingMode: { ideal: 'environment' } };
+
+  const fpsConstraint: ConstrainDouble = { ideal: 30, max: 30 };
+
+  if (maxDimensions && maxDimensions.width > 0 && maxDimensions.height > 0) {
+    return {
+      ...baseDevice,
+      width: { ideal: maxDimensions.width, max: maxDimensions.width },
+      height: { ideal: maxDimensions.height, max: maxDimensions.height },
+      frameRate: fpsConstraint
+    };
+  }
 
   if (tier === '1080p') {
     return {
       ...baseDevice,
       width: { ideal: 1920 },
       height: { ideal: 1080 },
-      frameRate: { ideal: 30, max: 30 }
+      frameRate: fpsConstraint
     };
   }
 
@@ -192,7 +232,7 @@ function buildVideoConstraint(
       ...baseDevice,
       width: { ideal: 1280 },
       height: { ideal: 720 },
-      frameRate: { ideal: 30, max: 30 }
+      frameRate: fpsConstraint
     };
   }
 
@@ -201,22 +241,30 @@ function buildVideoConstraint(
 
 async function tryGetVideoStreamWithTierFallback(
   audio: boolean,
-  deviceId?: string
+  deviceId?: string,
+  preferredTier?: RecordingQualityTier,
+  maxDimensions?: { width: number; height: number }
 ): Promise<{ stream: MediaStream; tier: '1080p' | '720p' | 'fallback' }> {
-  const tiers: Array<'1080p' | '720p' | 'fallback'> = ['1080p', '720p', 'fallback'];
+  const tiers: Array<'1080p' | '720p' | 'fallback'> =
+    preferredTier === '720p'
+      ? ['720p', 'fallback']
+      : ['1080p', '720p', 'fallback'];
   let lastError: unknown = null;
 
   for (const tier of tiers) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: buildVideoConstraint(tier, deviceId),
+        video: buildVideoConstraint(
+          tier,
+          deviceId,
+          tier !== 'fallback' ? maxDimensions : undefined
+        ),
         audio
       });
       return { stream, tier };
     } catch (err) {
       lastError = err;
       const errName = (err as { name?: string })?.name;
-      // Permission denial should fail fast if silent video itself was denied
       if (
         !audio &&
         (errName === 'NotAllowedError' || errName === 'PermissionDeniedError')
@@ -229,11 +277,6 @@ async function tryGetVideoStreamWithTierFallback(
   throw lastError ?? new Error('Không thể khởi tạo luồng hình ảnh từ camera.');
 }
 
-/**
- * Acquires the recording MediaStream preferring 1080p@30fps -> 720p@30fps -> fallback.
- * Audio is OFF by default; if audio opt-in is enabled and microphone permission fails,
- * gracefully falls back to video-only so missing mic permission never breaks silent recording.
- */
 export async function acquireRecordingMediaStream(
   options: AcquireRecordingStreamOptions = {}
 ): Promise<AcquiredRecordingStream> {
@@ -243,7 +286,9 @@ export async function acquireRecordingMediaStream(
     try {
       const { stream, tier } = await tryGetVideoStreamWithTierFallback(
         true,
-        options.deviceId
+        options.deviceId,
+        options.preferredTier,
+        options.maxDimensions
       );
       return {
         stream,
@@ -252,10 +297,11 @@ export async function acquireRecordingMediaStream(
         audioFallbackWarning: null
       };
     } catch {
-      // Fall back cleanly to silent video-only stream
       const { stream, tier } = await tryGetVideoStreamWithTierFallback(
         false,
-        options.deviceId
+        options.deviceId,
+        options.preferredTier,
+        options.maxDimensions
       );
       return {
         stream,
@@ -269,7 +315,9 @@ export async function acquireRecordingMediaStream(
 
   const { stream, tier } = await tryGetVideoStreamWithTierFallback(
     false,
-    options.deviceId
+    options.deviceId,
+    options.preferredTier,
+    options.maxDimensions
   );
 
   return {
@@ -358,6 +406,69 @@ export function translateCameraError(error: unknown): string {
       return error instanceof Error && error.message
         ? error.message
         : 'Không thể khởi động camera trên thiết bị.';
+  }
+}
+
+let sharedScanAudioContext: AudioContext | null = null;
+
+/**
+ * Phát âm thanh "píp" ngắn (mô phỏng máy quét mã vạch chuyên dụng) bằng Web Audio API
+ * kèm phản hồi rung nhẹ trên thiết bị hỗ trợ khi quét thành công mã vạch hoặc mã QR.
+ */
+export function playScanSuccessBeep(): void {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      typeof navigator.vibrate === 'function'
+    ) {
+      navigator.vibrate(50);
+    }
+  } catch {
+    // Ignore vibration errors on unsupported browsers
+  }
+
+  try {
+    const AudioContextClass =
+      globalThis.AudioContext ??
+      (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+
+    if (!AudioContextClass) {
+      return;
+    }
+
+    if (!sharedScanAudioContext || sharedScanAudioContext.state === 'closed') {
+      sharedScanAudioContext = new AudioContextClass();
+    }
+
+    const ctx = sharedScanAudioContext;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => undefined);
+    }
+
+    const now = ctx.currentTime;
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(2150, now);
+
+    gainNode.gain.setValueAtTime(0.0001, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.22, now + 0.008);
+    gainNode.gain.setValueAtTime(0.22, now + 0.065);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.095);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    oscillator.start(now);
+    oscillator.stop(now + 0.1);
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      gainNode.disconnect();
+    };
+  } catch {
+    // Ignore Web Audio API restrictions in headless/muted environments
   }
 }
 

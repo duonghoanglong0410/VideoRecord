@@ -1,4 +1,5 @@
 import {
+  getChunkPayloadByteLength,
   LOCAL_RECORDINGS_STORE,
   LocalStoreAccessDeniedError,
   openPackingProofDb,
@@ -88,7 +89,7 @@ export class IndexedDbTusFileSource {
           if (cursor) {
             const record = cursor.value as LocalRecordingChunk;
             if (record.ownerUserId === ownerUserId) {
-              const actualLen = record.data?.byteLength ?? 0;
+              const actualLen = getChunkPayloadByteLength(record);
               if (actualLen <= 0 || actualLen !== record.byteLength) {
                 reject(
                   new Error(
@@ -219,7 +220,7 @@ export class IndexedDbTusFileSource {
       );
     }
 
-    const blobParts: ArrayBuffer[] = [];
+    const blobParts: BlobPart[] = [];
 
     for (let i = 0; i < overlapping.length; i += 1) {
       const span = overlapping[i];
@@ -229,17 +230,34 @@ export class IndexedDbTusFileSource {
         throw new LocalStoreAccessDeniedError();
       }
 
-      if (record.seq !== span.seq || !record.data || record.data.byteLength !== span.byteLength) {
+      const payloadLen = getChunkPayloadByteLength(record);
+      if (record.seq !== span.seq || payloadLen !== span.byteLength) {
         throw new Error(`Dữ liệu chunk #${span.seq} không khớp kích thước dự kiến.`);
       }
 
       const localStart = Math.max(0, safeStart - span.startOffset);
       const localEnd = Math.min(span.byteLength, safeEnd - span.startOffset);
 
-      if (localStart === 0 && localEnd === span.byteLength) {
-        blobParts.push(record.data);
-      } else if (localEnd > localStart) {
-        blobParts.push(record.data.slice(localStart, localEnd));
+      if (record.blob && typeof record.blob.slice === 'function') {
+        const subBlob =
+          localStart === 0 && localEnd === span.byteLength
+            ? record.blob
+            : localEnd > localStart
+              ? record.blob.slice(localStart, localEnd)
+              : null;
+        if (subBlob) {
+          if (typeof Blob !== 'undefined' && subBlob instanceof Blob) {
+            blobParts.push(subBlob);
+          } else if (typeof subBlob.arrayBuffer === 'function') {
+            blobParts.push(await subBlob.arrayBuffer());
+          }
+        }
+      } else if (record.data) {
+        if (localStart === 0 && localEnd === span.byteLength) {
+          blobParts.push(record.data);
+        } else if (localEnd > localStart) {
+          blobParts.push(record.data.slice(localStart, localEnd));
+        }
       }
     }
 

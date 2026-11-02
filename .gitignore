@@ -17,6 +17,8 @@ TestResults/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.certs/
+.certs/
 e2e/test-results/
 e2e/playwright-report/
 e2e/blob-report/

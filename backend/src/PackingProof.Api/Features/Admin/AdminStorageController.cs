@@ -331,6 +331,7 @@ public sealed partial class AdminStorageController : ControllerBase
                 "Mã Shop, Slug hoặc thư mục con lưu trữ đã tồn tại trong hệ thống."));
         }
 
+        var now = DateTime.UtcNow;
         var shop = new Shop
         {
             Id = Guid.NewGuid(),
@@ -339,10 +340,55 @@ public sealed partial class AdminStorageController : ControllerBase
             Name = name,
             AllowedStorageSubdir = safeSubdir,
             IsActive = true,
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAtUtc = now
         };
 
         _db.Shops.Add(shop);
+
+        var createdWarehouses = new List<AdminWarehouseStorageDto>();
+        if (request.CreateDefaultWarehouse)
+        {
+            var shortCode = new string(code.Where(char.IsLetterOrDigit).Take(8).ToArray()).ToUpperInvariant();
+            if (string.IsNullOrEmpty(shortCode))
+            {
+                shortCode = "SHOP";
+            }
+
+            var defaultWhCode = $"WH-{shortCode}-01";
+            var defaultWhName = string.IsNullOrWhiteSpace(request.DefaultWarehouseName)
+                ? "Kho chính 01"
+                : request.DefaultWarehouseName.Trim();
+
+            var defaultWh = new Warehouse
+            {
+                Id = Guid.NewGuid(),
+                ShopId = shop.Id,
+                Code = defaultWhCode,
+                Name = defaultWhName,
+                IsActive = true,
+                CreatedAtUtc = now
+            };
+            _db.Warehouses.Add(defaultWh);
+
+            _db.PackingStations.Add(new PackingStation
+            {
+                Id = Guid.NewGuid(),
+                WarehouseId = defaultWh.Id,
+                Code = "ST-01",
+                Name = "Bàn đóng gói 01",
+                IsActive = true,
+                CreatedAtUtc = now
+            });
+
+            createdWarehouses.Add(new AdminWarehouseStorageDto(
+                Id: defaultWh.Id,
+                ShopId: shop.Id,
+                Code: defaultWh.Code,
+                Name: defaultWh.Name,
+                IsActive: true,
+                PackingStationCount: 1,
+                CreatedAtUtc: now));
+        }
 
         var profile = await LoadOrCreateActiveStorageProfileAsync(ct);
         var activeSubdirs = await _db.Shops
@@ -356,7 +402,7 @@ public sealed partial class AdminStorageController : ControllerBase
             activeSubdirs.Distinct(StringComparer.OrdinalIgnoreCase)
                          .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                          .ToArray());
-        profile.UpdatedAtUtc = DateTime.UtcNow;
+        profile.UpdatedAtUtc = now;
         profile.UpdatedByUserId = actorId;
 
         await _db.SaveChangesAsync(ct);
@@ -371,7 +417,7 @@ public sealed partial class AdminStorageController : ControllerBase
             ShopId: shop.Id,
             IpAddress: HttpContext.GetClientIp(),
             UserAgent: HttpContext.GetUserAgent(),
-            Metadata: new { shop.Code, shop.Slug, shop.Name, shop.AllowedStorageSubdir }), ct);
+            Metadata: new { shop.Code, shop.Slug, shop.Name, shop.AllowedStorageSubdir, request.CreateDefaultWarehouse }), ct);
 
         return StatusCode(StatusCodes.Status201Created, new AdminShopStorageDto(
             Id: shop.Id,
@@ -381,7 +427,7 @@ public sealed partial class AdminStorageController : ControllerBase
             AllowedStorageSubdir: shop.AllowedStorageSubdir,
             IsActive: shop.IsActive,
             CreatedAtUtc: shop.CreatedAtUtc,
-            Warehouses: []));
+            Warehouses: createdWarehouses));
     }
 
     [HttpPost("shops/{shopId:guid}/warehouses")]

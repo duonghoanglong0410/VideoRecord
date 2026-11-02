@@ -8,7 +8,9 @@ import {
   negotiateSupportedMimeType,
   stopMediaStreamTracks,
   translateCameraError,
-  type AcquiredRecordingStream
+  type AcquiredRecordingStream,
+  type RecordingOrientationMode,
+  type RecordingQualityTier
 } from './mediaCapabilities';
 import {
   postRecordingEventApi,
@@ -31,6 +33,9 @@ export interface RecorderStateSnapshot {
   trackingNumber: string | null;
   mimeType: string | null;
   resolutionTier: '1080p' | '720p' | 'fallback' | null;
+  activeVideoDimensions?: { width: number; height: number } | null;
+  encoderMode?: 'hardware' | 'multithread-software' | 'fallback' | null;
+  landscapeHardwareHint?: boolean;
   audioActive: boolean;
   audioFallbackWarning: string | null;
   elapsedSeconds: number;
@@ -49,6 +54,8 @@ export interface RecorderControllerStartInput {
   limits: RecordingRuntimeLimits;
   deviceId?: string;
   enableAudio?: boolean;
+  preferredTier?: RecordingQualityTier;
+  orientation?: RecordingOrientationMode;
 }
 
 export interface RecorderControllerDependencies {
@@ -58,6 +65,9 @@ export interface RecorderControllerDependencies {
   acquireStream?: (opts: {
     deviceId?: string;
     enableAudio?: boolean;
+    preferredTier?: RecordingQualityTier;
+    orientation?: RecordingOrientationMode;
+    maxDimensions?: { width: number; height: number };
   }) => Promise<AcquiredRecordingStream>;
   postEvent?: typeof postRecordingEventApi;
   timesliceMs?: number;
@@ -71,6 +81,9 @@ const DEFAULT_SNAPSHOT: RecorderStateSnapshot = {
   trackingNumber: null,
   mimeType: null,
   resolutionTier: null,
+  activeVideoDimensions: null,
+  encoderMode: null,
+  landscapeHardwareHint: false,
   audioActive: false,
   audioFallbackWarning: null,
   elapsedSeconds: 0,
@@ -161,7 +174,9 @@ export class RecorderController {
     try {
       acquired = await acquireFn({
         deviceId: input.deviceId,
-        enableAudio: Boolean(input.enableAudio && input.limits.enableAudioRecording)
+        enableAudio: Boolean(input.enableAudio && input.limits.enableAudioRecording),
+        preferredTier: input.preferredTier,
+        orientation: input.orientation
       });
     } catch (err) {
       const msg = translateCameraError(err);
@@ -176,7 +191,14 @@ export class RecorderController {
     this.stream = acquired.stream;
     this.deps.onStreamChange(acquired.stream);
 
-    const mimeResult = negotiateSupportedMimeType();
+    const targetVideoBitrate =
+      acquired.resolutionTier === '1080p'
+        ? 4_000_000
+        : acquired.resolutionTier === '720p'
+          ? 2_500_000
+          : 2_000_000;
+
+    const mimeResult = negotiateSupportedMimeType(acquired.audioActive);
     if (!mimeResult.mediaRecorderAvailable || !mimeResult.supported) {
       this.cleanupRuntimeResources();
       const msg =
@@ -189,12 +211,35 @@ export class RecorderController {
       throw new Error(msg);
     }
 
+    const finalVideoTrack = acquired.stream.getVideoTracks()[0];
+    const finalTrackSettings =
+      finalVideoTrack && typeof finalVideoTrack.getSettings === 'function'
+        ? finalVideoTrack.getSettings()
+        : undefined;
+    const resolvedActiveDimensions =
+      finalTrackSettings?.width && finalTrackSettings?.height
+        ? {
+            width: finalTrackSettings.width,
+            height: finalTrackSettings.height
+          }
+        : null;
+
     const negotiatedMime = mimeResult.mimeType || '';
+
     let recorder: MediaRecorder;
     try {
-      recorder = negotiatedMime
-        ? new MediaRecorder(acquired.stream, { mimeType: negotiatedMime })
-        : new MediaRecorder(acquired.stream);
+      const preferredOptions: MediaRecorderOptions = {
+        ...(negotiatedMime ? { mimeType: negotiatedMime } : {}),
+        videoBitsPerSecond: targetVideoBitrate,
+        ...(acquired.audioActive ? { audioBitsPerSecond: 96_000 } : {})
+      };
+      try {
+        recorder = new MediaRecorder(acquired.stream, preferredOptions);
+      } catch {
+        recorder = negotiatedMime
+          ? new MediaRecorder(acquired.stream, { mimeType: negotiatedMime })
+          : new MediaRecorder(acquired.stream);
+      }
     } catch (err) {
       this.cleanupRuntimeResources();
       const msg =
@@ -289,6 +334,7 @@ export class RecorderController {
         phase: 'recording',
         mimeType: effectiveMime,
         resolutionTier: acquired.resolutionTier,
+        activeVideoDimensions: resolvedActiveDimensions,
         audioActive: acquired.audioActive,
         audioFallbackWarning: acquired.audioFallbackWarning,
         elapsedSeconds: 0
@@ -304,7 +350,7 @@ export class RecorderController {
     };
 
     try {
-      recorder.start(this.deps.timesliceMs ?? 1000);
+      recorder.start(this.deps.timesliceMs ?? 3000);
     } catch (err) {
       this.cleanupRuntimeResources();
       const msg =
@@ -532,7 +578,7 @@ export class RecorderController {
 
   private startDurationTimer(): void {
     this.stopDurationTimer();
-    const intervalMs = this.deps.timerIntervalMs ?? 250;
+    const intervalMs = this.deps.timerIntervalMs ?? 1000;
     const nowFn = this.deps.nowMs ?? Date.now;
 
     this.timerHandle = setInterval(() => {
@@ -563,11 +609,16 @@ export class RecorderController {
         }
       }
 
-      this.updateSnapshot({
-        ...this.snapshot,
-        elapsedSeconds: elapsed,
-        limitWarningMessage: limitWarning
-      });
+      if (
+        Math.floor(elapsed) !== Math.floor(this.snapshot.elapsedSeconds) ||
+        limitWarning !== this.snapshot.limitWarningMessage
+      ) {
+        this.updateSnapshot({
+          ...this.snapshot,
+          elapsedSeconds: elapsed,
+          limitWarningMessage: limitWarning
+        });
+      }
     }, intervalMs);
   }
 

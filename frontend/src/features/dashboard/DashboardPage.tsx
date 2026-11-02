@@ -1,24 +1,40 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  AlertCircle,
+  AlertTriangle,
+  ArrowRight,
+  Camera,
+  Film,
+  Loader2,
+  RefreshCw,
+  UserCheck,
+  Video
+} from 'lucide-react';
 import { useAuth } from '../../app/authStore';
 import {
   formatDurationSeconds,
-  formatHoChiMinhDateTime,
-  getCaptureStatusBadge,
-  getScopeTypeLabel,
-  getSourceBadge,
-  getStorageStatusBadge
+  formatHoChiMinhDateTime
 } from '../../app/formatters';
 import { Permissions } from '../../app/types';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { StatCard } from '../../components/ui/StatCard';
 import {
   fetchDashboardSummaryApi,
+  type DashboardRecentVideoDto,
   type DashboardSummaryDto
 } from '../admin/adminApi';
-import { useTusUploadQueue } from '../upload-queue/TusUploadCoordinator';
+
+function isRecentVideoFailed(video: DashboardRecentVideoDto): boolean {
+  return (
+    video.captureStatus !== 'Captured' ||
+    video.storageStatus === 'Failed'
+  );
+}
 
 export function DashboardPage() {
-  const { user, runtimeConfig, hasPermission } = useAuth();
-  const uploadQueue = useTusUploadQueue();
+  const { user, hasPermission } = useAuth();
 
   const [summary, setSummary] = useState<DashboardSummaryDto | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -51,177 +67,179 @@ export function DashboardPage() {
     void loadSummary();
   }, [loadSummary]);
 
-  const effectiveMode =
-    summary?.activeStorageMode ?? runtimeConfig?.storageMode ?? 'LocalDevelopment';
   const canRecord = hasPermission(Permissions.RecordingCreate);
   const canImport = hasPermission(Permissions.VideoImport);
   const canViewVideos = hasPermission(Permissions.VideoView);
-  const canUpload =
-    hasPermission(Permissions.VideoUpload) || canRecord || canImport;
   const canManageUsers = hasPermission(Permissions.UserManage);
-  const canManageStorage = hasPermission(Permissions.StorageManage);
 
-  const localQueueCount = uploadQueue?.items.length ?? 0;
+  const hasPendingActions =
+    ((summary?.pendingDeletionRequestsCount ?? 0) > 0 && canViewVideos) ||
+    ((summary?.pendingUserApprovalsCount ?? 0) > 0 && canManageUsers);
 
   return (
-    <div>
-      <div className="surface-card">
-        <div className="page-header-row">
-          <div>
-            <h1 className="page-title">Bảng điều khiển vận hành</h1>
-            <p className="page-subtitle">
-              Xin chào <strong>{user?.fullName}</strong>. Số liệu dưới đây được tổng hợp
-              trực tiếp từ cơ sở dữ liệu trong phạm vi quyền được cấp (múi giờ Việt Nam{' '}
-              <code>Asia/Ho_Chi_Minh</code>).
-            </p>
-          </div>
-
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={() => void loadSummary()}
-            disabled={isLoading}
-          >
-            {isLoading ? 'Đang cập nhật...' : 'Làm mới số liệu'}
-          </button>
-        </div>
-
-        <div className="quick-actions-row">
-          {(canRecord || canImport) && (
-            <Link to="/record" className="btn btn-primary">
-              {canRecord ? 'Quay đóng gói đơn mới' : 'Nhập tệp video đóng gói'}
-            </Link>
-          )}
-          {canUpload && (
-            <Link to="/uploads" className="btn btn-outline">
-              Hàng đợi tải lên trên thiết bị
-              {localQueueCount > 0 ? ` (${localQueueCount})` : ''}
-            </Link>
-          )}
-          {canViewVideos && (
-            <Link to="/videos" className="btn btn-navy">
-              Tra cứu thư viện video
-            </Link>
-          )}
-          {canManageUsers && (
-            <Link to="/admin/users" className="btn btn-outline">
-              Quản trị tài khoản
-            </Link>
-          )}
-          {canManageStorage && (
-            <Link to="/admin/storage" className="btn btn-outline">
-              Cấu hình lưu trữ
-            </Link>
-          )}
-        </div>
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+        <PageHeader
+          title="Bảng điều khiển vận hành"
+          subtitle={
+            <>
+              Xin chào <strong className="text-slate-800">{user?.fullName}</strong> — Tổng hợp
+              nhanh tình hình đóng gói và lưu trữ video hôm nay.
+            </>
+          }
+          actions={
+            <>
+              <button
+                type="button"
+                className="btn btn-outline inline-flex items-center gap-1.5"
+                onClick={() => void loadSummary()}
+                disabled={isLoading}
+              >
+                <RefreshCw
+                  className={`h-4 w-4 shrink-0 ${isLoading ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>{isLoading ? 'Đang cập nhật...' : 'Làm mới'}</span>
+              </button>
+              {(canRecord || canImport) && (
+                <Link
+                  to="/record"
+                  className="btn btn-primary inline-flex items-center gap-1.5"
+                >
+                  <Camera className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>{canRecord ? 'Quay đơn mới' : 'Nhập video có sẵn'}</span>
+                </Link>
+              )}
+            </>
+          }
+        />
       </div>
 
       {loadError && (
-        <div className="alert alert-warning" role="alert">
-          <strong>Chưa tải được thống kê trực tiếp:</strong> {loadError}
+        <div
+          className="flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"
+          role="alert"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+          <div>
+            <strong>Chưa tải được thống kê trực tiếp:</strong> {loadError}
+          </div>
+        </div>
+      )}
+
+      {isLoading && !summary && (
+        <div
+          className="flex items-center justify-center gap-2.5 rounded-2xl border border-slate-200 bg-white p-8 text-sm font-medium text-slate-600"
+          role="status"
+        >
+          <Loader2 className="h-5 w-5 animate-spin text-blue-600" aria-hidden="true" />
+          <span>Đang tổng hợp số liệu vận hành...</span>
         </div>
       )}
 
       {summary && (
         <>
-          <div className="metrics-grid" data-testid="dashboard-metrics-grid">
-            <div className="metric-card">
-              <span className="metric-label">Phiên ghi nhận hôm nay</span>
-              <span className="metric-value metric-value-accent">
-                {summary.todayRecordingsCount}
-              </span>
-              <span className="metric-caption">Theo ngày tại TP.HCM (GMT+7)</span>
-            </div>
-
-            <div className="metric-card">
-              <span className="metric-label">
-                {effectiveMode === 'SynologyMounted'
-                  ? 'Đã lưu vào Synology NAS'
-                  : 'Đã lưu cục bộ (Local)'}
-              </span>
-              <span className="metric-value">{summary.totalStoredCount}</span>
-              <span className="metric-caption">
-                {effectiveMode === 'SynologyMounted'
-                  ? 'Chế độ lưu trữ chính thức Synology NAS'
-                  : 'Chế độ thử nghiệm LocalDevelopment'}
-              </span>
-            </div>
-
-            <div className="metric-card">
-              <span className="metric-label">Đang tải lên / Kiểm tra</span>
-              <span className="metric-value">{summary.awaitingOrValidatingCount}</span>
-              <span className="metric-caption">Đang xử lý hoặc chờ ghi kho lưu trữ</span>
-            </div>
-
-            <div className="metric-card">
-              <span className="metric-label">Bị gián đoạn / Lỗi</span>
-              <span
-                className={`metric-value${
-                  summary.interruptedOrFailedCount > 0 ? ' metric-value-danger' : ''
-                }`}
-              >
-                {summary.interruptedOrFailedCount}
-              </span>
-              <span className="metric-caption">Cần đối chiếu trước khi giao đơn</span>
-            </div>
-
-            <div className="metric-card">
-              <span className="metric-label">Đang giữ bằng chứng (Hold)</span>
-              <span
-                className={`metric-value${
-                  summary.onHoldCount > 0 ? ' metric-value-warning' : ''
-                }`}
-              >
-                {summary.onHoldCount}
-              </span>
-              <span className="metric-caption">Khóa chống xóa thủ công &amp; tự động</span>
-            </div>
+          <div
+            className="max-w-sm"
+            data-testid="dashboard-metrics-grid"
+          >
+            <StatCard
+              label="Đơn đã quay hôm nay"
+              value={summary.todayRecordingsCount}
+              hint="Trong ngày hôm nay"
+              icon={<Video className="h-4.5 w-4.5 sm:h-5 sm:w-5" />}
+              tone="blue"
+              to={canViewVideos ? '/videos' : undefined}
+            />
           </div>
 
-          {((summary.pendingDeletionRequestsCount ?? 0) > 0 ||
-            (summary.pendingUserApprovalsCount ?? 0) > 0) && (
-            <div className="surface-card">
-              <h2 style={{ marginTop: 0, fontSize: '1.06rem' }}>
-                Việc cần phê duyệt trong phạm vi quản lý
-              </h2>
-              <div className="quick-actions-row" style={{ marginTop: 8 }}>
-                {(summary.pendingDeletionRequestsCount ?? 0) > 0 && canViewVideos && (
-                  <Link to="/videos?tab=deletions" className="btn btn-outline">
-                    {summary.pendingDeletionRequestsCount} yêu cầu xóa video đang chờ duyệt
-                  </Link>
-                )}
-                {(summary.pendingUserApprovalsCount ?? 0) > 0 && canManageUsers && (
-                  <Link
-                    to="/admin/users?approvalStatus=PendingApproval"
-                    className="btn btn-outline"
-                  >
-                    {summary.pendingUserApprovalsCount} tài khoản nhân viên đang chờ duyệt
-                  </Link>
-                )}
+          {/* Action-Required Approval Callout */}
+          {hasPendingActions && (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50/80 p-4 shadow-2xs">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+                    <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <div>
+                    <h2 className="m-0 text-sm font-bold text-amber-950">
+                      Cần phê duyệt ngay
+                    </h2>
+                    <p className="m-0 text-xs text-amber-800">
+                      Có yêu cầu đang chờ quản lý xử lý trong phạm vi của bạn.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {(summary.pendingDeletionRequestsCount ?? 0) > 0 && canViewVideos && (
+                    <Link
+                      to="/videos?tab=deletions"
+                      className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3.5 py-2 text-xs font-bold text-amber-950 no-underline shadow-2xs transition-colors hover:bg-amber-100/60"
+                    >
+                      <Film className="h-4 w-4 text-amber-700" aria-hidden="true" />
+                      <span>
+                        {summary.pendingDeletionRequestsCount} yêu cầu xóa video chờ duyệt
+                      </span>
+                      <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Link>
+                  )}
+
+                  {(summary.pendingUserApprovalsCount ?? 0) > 0 && canManageUsers && (
+                    <Link
+                      to="/admin/users?approvalStatus=PendingApproval"
+                      className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3.5 py-2 text-xs font-bold text-amber-950 no-underline shadow-2xs transition-colors hover:bg-amber-100/60"
+                    >
+                      <UserCheck className="h-4 w-4 text-amber-700" aria-hidden="true" />
+                      <span>
+                        {summary.pendingUserApprovalsCount} tài khoản nhân viên chờ duyệt
+                      </span>
+                      <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Link>
+                  )}
+                </div>
               </div>
             </div>
           )}
 
+          {/* Recent Videos Table & Mobile Cards */}
           {canViewVideos && (
-            <div className="surface-card">
-              <div className="page-header-row" style={{ marginBottom: 12 }}>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 style={{ margin: 0, fontSize: '1.08rem' }}>
-                    Video bằng chứng gần đây
+                  <h2 className="m-0 text-base font-bold text-slate-900">
+                    Video đóng gói gần đây
                   </h2>
-                  <p className="page-subtitle">
+                  <p className="mt-0.5 mb-0 text-xs text-slate-500">
                     Cập nhật lúc {formatHoChiMinhDateTime(summary.generatedAtUtc)}
                   </p>
                 </div>
-                <Link to="/videos" className="btn btn-outline">
-                  Xem toàn bộ danh sách
+                <Link
+                  to="/videos"
+                  className="btn btn-outline inline-flex items-center gap-1.5 text-xs"
+                >
+                  <span>Xem tất cả video</span>
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </Link>
               </div>
 
               {summary.recentVideos.length === 0 ? (
-                <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-                  Chưa có bản ghi video nào trong phạm vi quyền của bạn.
-                </p>
+                <EmptyState
+                  icon={<Film className="h-6 w-6" />}
+                  title="Chưa có video đóng gói nào"
+                  description="Các video sau khi quay và tải lên hệ thống sẽ hiển thị ngay tại đây."
+                  action={
+                    canRecord || canImport ? (
+                      <Link
+                        to="/record"
+                        className="btn btn-primary inline-flex items-center gap-2"
+                      >
+                        <Camera className="h-4 w-4" aria-hidden="true" />
+                        <span>Quay đơn hàng đầu tiên</span>
+                      </Link>
+                    ) : undefined
+                  }
+                />
               ) : (
                 <>
                   <div className="desktop-table-wrap">
@@ -233,66 +251,52 @@ export function DashboardPage() {
                           <th>Nhân viên</th>
                           <th>Trạng thái</th>
                           <th>Thời lượng</th>
-                          <th>Thời điểm tạo</th>
-                          <th>Thao tác</th>
+                          <th>Thời gian quay</th>
+                          <th></th>
                         </tr>
                       </thead>
                       <tbody>
                         {summary.recentVideos.map((v) => {
-                          const capBadge = getCaptureStatusBadge(v.captureStatus);
-                          const stoBadge = getStorageStatusBadge(
-                            v.storageStatus,
-                            v.storageMode
-                          );
-                          const srcBadge = getSourceBadge(v.source);
+                          const failed = isRecentVideoFailed(v);
                           return (
                             <tr key={v.id}>
                               <td>
-                                <span className="mono-code">{v.trackingNumber}</span>
-                                {v.hold && (
-                                  <div style={{ marginTop: 4 }}>
-                                    <span className="status-pill status-pill-hold">
-                                      Đang giữ (Hold)
-                                    </span>
-                                  </div>
-                                )}
+                                <span className="mono-code text-slate-900">
+                                  {v.trackingNumber}
+                                </span>
                               </td>
                               <td>
-                                <strong>{v.shopName}</strong>
-                                <div
-                                  style={{
-                                    fontSize: '0.82rem',
-                                    color: 'var(--color-text-muted)'
-                                  }}
-                                >
+                                <div className="font-semibold text-slate-900">
+                                  {v.shopName}
+                                </div>
+                                <div className="text-xs text-slate-500">
                                   {v.warehouseName}
                                 </div>
                               </td>
-                              <td>{v.ownerFullName}</td>
+                              <td className="text-slate-700">{v.ownerFullName}</td>
                               <td>
-                                <div className="badge-cluster">
-                                  <span className={capBadge.className}>
-                                    {capBadge.label}
-                                  </span>
-                                  <span className={stoBadge.className}>
-                                    {stoBadge.label}
-                                  </span>
-                                  {v.source === 'Imported' && (
-                                    <span className={srcBadge.className}>
-                                      {srcBadge.shortLabel}
-                                    </span>
-                                  )}
-                                </div>
+                                <span
+                                  className={
+                                    failed
+                                      ? 'status-pill status-pill-interrupted'
+                                      : 'status-pill status-pill-completed'
+                                  }
+                                >
+                                  {failed ? 'Thất bại' : 'Thành công'}
+                                </span>
                               </td>
-                              <td>{formatDurationSeconds(v.durationSeconds)}</td>
-                              <td>{formatHoChiMinhDateTime(v.createdAtUtc)}</td>
-                              <td>
+                              <td className="font-mono text-xs text-slate-700">
+                                {formatDurationSeconds(v.durationSeconds)}
+                              </td>
+                              <td className="text-xs text-slate-600">
+                                {formatHoChiMinhDateTime(v.createdAtUtc)}
+                              </td>
+                              <td className="text-right">
                                 <Link
                                   to={`/videos/${v.id}`}
-                                  className="btn btn-outline"
-                                  style={{ padding: '6px 12px' }}
+                                  className="btn btn-outline px-3 py-1.5 text-xs"
                                 >
-                                  Chi tiết
+                                  Xem chi tiết
                                 </Link>
                               </td>
                             </tr>
@@ -304,41 +308,36 @@ export function DashboardPage() {
 
                   <div className="mobile-card-list mobile-card-list-hide-desktop">
                     {summary.recentVideos.map((v) => {
-                      const capBadge = getCaptureStatusBadge(v.captureStatus);
-                      const stoBadge = getStorageStatusBadge(
-                        v.storageStatus,
-                        v.storageMode
-                      );
+                      const failed = isRecentVideoFailed(v);
                       return (
                         <div key={v.id} className="mobile-data-card">
-                          <div className="page-header-row">
-                            <span className="mono-code" style={{ fontSize: '1.05rem' }}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="mono-code text-base text-slate-950">
                               {v.trackingNumber}
+                            </span>
+                            <span
+                              className={
+                                failed
+                                  ? 'status-pill status-pill-interrupted'
+                                  : 'status-pill status-pill-completed'
+                              }
+                            >
+                              {failed ? 'Thất bại' : 'Thành công'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-500">
+                            <span>
+                              {formatHoChiMinhDateTime(v.createdAtUtc)} •{' '}
+                              <strong className="font-mono text-slate-700">
+                                {formatDurationSeconds(v.durationSeconds)}
+                              </strong>
                             </span>
                             <Link
                               to={`/videos/${v.id}`}
-                              className="btn btn-outline"
-                              style={{ padding: '6px 12px' }}
+                              className="btn btn-outline shrink-0 px-3 py-1.5 text-xs"
                             >
-                              Mở video
+                              Xem chi tiết
                             </Link>
-                          </div>
-                          <div
-                            style={{
-                              fontSize: '0.84rem',
-                              color: 'var(--color-text-muted)'
-                            }}
-                          >
-                            {v.shopName} • {v.warehouseName} • {v.ownerFullName}
-                          </div>
-                          <div className="badge-cluster">
-                            <span className={capBadge.className}>{capBadge.label}</span>
-                            <span className={stoBadge.className}>{stoBadge.label}</span>
-                            {v.hold && (
-                              <span className="status-pill status-pill-hold">
-                                Đang giữ (Hold)
-                              </span>
-                            )}
                           </div>
                         </div>
                       );
@@ -350,37 +349,6 @@ export function DashboardPage() {
           )}
         </>
       )}
-
-      <div className="surface-card">
-        <h2 style={{ marginTop: 0, fontSize: '1.05rem' }}>
-          Phạm vi phân quyền hiện tại của tài khoản
-        </h2>
-        {user?.grants && user.grants.length > 0 ? (
-          <div className="mobile-card-list">
-            {user.grants.map((g) => (
-              <div
-                key={g.id}
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid #E2E8F0',
-                  background: '#F8FAFC',
-                  fontSize: '0.9rem'
-                }}
-              >
-                <strong>{g.roleName}</strong> — Phạm vi:{' '}
-                <strong>{getScopeTypeLabel(g.scopeType)}</strong>
-                {g.shopName ? ` • Shop: ${g.shopName}` : ''}
-                {g.warehouseName ? ` • Kho: ${g.warehouseName}` : ''}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={{ color: 'var(--color-text-muted)', marginBottom: 0 }}>
-            Tài khoản chưa có phạm vi vai trò nào được gán.
-          </p>
-        )}
-      </div>
     </div>
   );
 }

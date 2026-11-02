@@ -1,3 +1,4 @@
+import { AlertTriangle } from 'lucide-react';
 import type { StorageMode } from './types';
 
 export interface StorageModeBannerProps {
@@ -10,12 +11,16 @@ export function StorageModeBanner({ storageMode }: StorageModeBannerProps) {
   }
 
   return (
-    <div className="storage-mode-banner" role="status" data-testid="storage-mode-banner">
-      <span className="storage-mode-badge">Chế độ thử nghiệm — lưu local</span>
-      <span>
-        Dữ liệu video đang lưu vào thư mục cục bộ trên máy chủ phát triển.
+    <div
+      className="storage-mode-banner"
+      role="status"
+      data-testid="storage-mode-banner"
+    >
+      <span className="storage-mode-badge">
+        <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+        Chế độ thử nghiệm — lưu local
       </span>
+      <span>Video hiện đang lưu tạm trên thư mục máy chủ cục bộ.</span>
     </div>
   );
 }
-

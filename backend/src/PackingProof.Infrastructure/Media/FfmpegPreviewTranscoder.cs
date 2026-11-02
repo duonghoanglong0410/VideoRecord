@@ -79,7 +79,7 @@ public sealed class FfmpegPreviewTranscoder : IPreviewTranscoder
 
         // Cap FFmpeg threads per job so Synology NAS / host CPU is never saturated
         var concurrency = Math.Clamp(_options.ProcessingConcurrency, 1, 8);
-        var perJobThreads = Math.Clamp(Environment.ProcessorCount / concurrency, 1, 2);
+        var perJobThreads = Math.Clamp(Environment.ProcessorCount / concurrency, 1, 4);
         var timeoutSeconds = Math.Clamp(_options.PreviewTranscodeTimeoutSeconds, 10, 3600);
 
         var psi = new ProcessStartInfo
@@ -108,6 +108,8 @@ public sealed class FfmpegPreviewTranscoder : IPreviewTranscoder
         psi.ArgumentList.Add("libx264");
         psi.ArgumentList.Add("-preset");
         psi.ArgumentList.Add("veryfast");
+        psi.ArgumentList.Add("-crf");
+        psi.ArgumentList.Add("20");
         psi.ArgumentList.Add("-pix_fmt");
         psi.ArgumentList.Add("yuv420p");
         psi.ArgumentList.Add("-movflags");

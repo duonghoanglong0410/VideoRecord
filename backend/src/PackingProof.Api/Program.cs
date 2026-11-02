@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,7 @@ using tusdotnet;
 
 var builder = WebApplication.CreateBuilder(args);
 
-if (builder.Environment.IsDevelopment())
+if (!builder.Environment.IsEnvironment("Testing"))
 {
     var dotEnvValues = DotEnvLoader.ReadDotEnvIfPresent(builder.Environment.ContentRootPath);
     if (dotEnvValues.Count > 0)
@@ -89,6 +90,11 @@ builder.Services.ConfigureHttpJsonOptions(json =>
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedFor
+});
 
 var autoMigrateSetting = app.Configuration["AUTO_MIGRATE_ON_STARTUP"];
 var shouldAutoMigrate = string.IsNullOrWhiteSpace(autoMigrateSetting) ||

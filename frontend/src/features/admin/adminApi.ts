@@ -179,12 +179,74 @@ export interface CreateAdminShopRequest {
   name: string;
   slug?: string | null;
   allowedStorageSubdir?: string | null;
+  createDefaultWarehouse?: boolean;
+  defaultWarehouseName?: string | null;
 }
 
 export interface CreateAdminWarehouseRequest {
   code: string;
   name: string;
   createDefaultStation?: boolean;
+}
+
+export interface AdminPackingStationDto {
+  id: string;
+  warehouseId: string;
+  code: string;
+  name: string;
+  isActive: boolean;
+  createdAtUtc: string;
+}
+
+export interface AdminWarehouseDetailDto {
+  id: string;
+  shopId: string;
+  code: string;
+  name: string;
+  isActive: boolean;
+  assignedUserCount: number;
+  recordingCount: number;
+  createdAtUtc: string;
+  packingStations: AdminPackingStationDto[];
+}
+
+export interface AdminShopWarehouseTreeDto {
+  id: string;
+  code: string;
+  slug: string;
+  name: string;
+  allowedStorageSubdir: string;
+  isActive: boolean;
+  assignedUserCount: number;
+  recordingCount: number;
+  createdAtUtc: string;
+  warehouses: AdminWarehouseDetailDto[];
+}
+
+export interface AdminWarehousesOverviewDto {
+  canManageShops: boolean;
+  shops: AdminShopWarehouseTreeDto[];
+}
+
+export interface CreateAdminUserRequest {
+  fullName: string;
+  email: string;
+  password: string;
+  grants?: GrantProposalDto[];
+  defaultShopId?: string | null;
+  defaultWarehouseId?: string | null;
+  forcePasswordReset?: boolean;
+}
+
+export interface UpdateAdminUserProfileRequest {
+  fullName: string;
+  defaultShopId?: string | null;
+  defaultWarehouseId?: string | null;
+}
+
+export interface AdminSetUserPasswordRequest {
+  newPassword: string;
+  forcePasswordReset?: boolean;
 }
 
 export interface AuditEventDto {
@@ -301,6 +363,35 @@ export function initiateAdminPasswordResetApi(
   );
 }
 
+export function createAdminUserApi(
+  payload: CreateAdminUserRequest
+): Promise<AdminUserSummaryDto> {
+  return apiRequest<AdminUserSummaryDto>('/api/admin/users', {
+    method: 'POST',
+    body: payload
+  });
+}
+
+export function updateAdminUserProfileApi(
+  userId: string,
+  payload: UpdateAdminUserProfileRequest
+): Promise<AdminUserSummaryDto> {
+  return apiRequest<AdminUserSummaryDto>(`/api/admin/users/${userId}/profile`, {
+    method: 'PUT',
+    body: payload
+  });
+}
+
+export function setAdminUserPasswordDirectApi(
+  userId: string,
+  payload: AdminSetUserPasswordRequest
+): Promise<{ message: string }> {
+  return apiRequest<{ message: string }>(`/api/admin/users/${userId}/set-password`, {
+    method: 'POST',
+    body: payload
+  });
+}
+
 export function listAdminRolesApi(): Promise<RoleDto[]> {
   return apiRequest<RoleDto[]>('/api/admin/roles', { method: 'GET' });
 }
@@ -363,6 +454,104 @@ export function createAdminWarehouseApi(
     method: 'POST',
     body: payload
   });
+}
+
+export function getAdminWarehousesOverviewApi(): Promise<AdminWarehousesOverviewDto> {
+  return apiRequest<AdminWarehousesOverviewDto>('/api/admin/warehouses/overview', {
+    method: 'GET'
+  });
+}
+
+export function updateAdminShopInfoApi(
+  shopId: string,
+  payload: {
+    code?: string;
+    name: string;
+    allowedStorageSubdir?: string;
+    isActive: boolean;
+  }
+): Promise<{ message: string }> {
+  return apiRequest<{ message: string }>(`/api/admin/warehouses/shops/${shopId}`, {
+    method: 'PUT',
+    body: payload
+  });
+}
+
+export function deleteAdminShopApi(
+  shopId: string,
+  force = false
+): Promise<{ message: string }> {
+  const qs = force ? '?force=true' : '';
+  return apiRequest<{ message: string }>(`/api/admin/warehouses/shops/${shopId}${qs}`, {
+    method: 'DELETE'
+  });
+}
+
+export function createManagedWarehouseApi(
+  shopId: string,
+  payload: CreateAdminWarehouseRequest
+): Promise<AdminWarehouseDetailDto> {
+  return apiRequest<AdminWarehouseDetailDto>(`/api/admin/warehouses/shops/${shopId}`, {
+    method: 'POST',
+    body: payload
+  });
+}
+
+export function updateManagedWarehouseApi(
+  warehouseId: string,
+  payload: { code: string; name: string; isActive: boolean }
+): Promise<AdminWarehouseDetailDto> {
+  return apiRequest<AdminWarehouseDetailDto>(`/api/admin/warehouses/${warehouseId}`, {
+    method: 'PUT',
+    body: payload
+  });
+}
+
+export function deleteManagedWarehouseApi(
+  warehouseId: string,
+  force = false
+): Promise<{ message: string }> {
+  const qs = force ? '?force=true' : '';
+  return apiRequest<{ message: string }>(`/api/admin/warehouses/${warehouseId}${qs}`, {
+    method: 'DELETE'
+  });
+}
+
+export function createPackingStationApi(
+  warehouseId: string,
+  payload: { code: string; name: string }
+): Promise<AdminPackingStationDto> {
+  return apiRequest<AdminPackingStationDto>(
+    `/api/admin/warehouses/${warehouseId}/stations`,
+    {
+      method: 'POST',
+      body: payload
+    }
+  );
+}
+
+export function updatePackingStationApi(
+  stationId: string,
+  payload: { code: string; name: string; isActive: boolean }
+): Promise<AdminPackingStationDto> {
+  return apiRequest<AdminPackingStationDto>(
+    `/api/admin/warehouses/stations/${stationId}`,
+    {
+      method: 'PUT',
+      body: payload
+    }
+  );
+}
+
+export function deletePackingStationApi(
+  stationId: string
+): Promise<{ message: string }> {
+  return apiRequest<{ message: string }>(
+    `/api/admin/warehouses/stations/${stationId}`,
+    {
+      method: 'DELETE'
+    }
+  );
 }
 
 export function listAuditEventsApi(params: {

@@ -78,7 +78,10 @@ public sealed class VideosController : ControllerBase
 
         var baseQuery = _db.Recordings
             .AsNoTracking()
-            .Where(r => !r.IsSoftDeleted);
+            .Where(r =>
+                !r.IsSoftDeleted &&
+                (r.CaptureStatus == CaptureStatus.Captured ||
+                 r.CaptureStatus == CaptureStatus.Interrupted));
 
         if (!ScopeQueryExtensions.TryApplyRecordingPermissionScope(
             baseQuery,

@@ -1,6 +1,6 @@
 import {
+  getChunkPayloadByteLength,
   LOCAL_QUEUE_UPDATED_EVENT,
-  LOCAL_RECORDINGS_STORE,
   openPackingProofDb,
   putLocalRecordingManifest,
   QuotaExceededChunkError,
@@ -10,7 +10,104 @@ import {
   type LocalRecordingChunk,
   type LocalRecordingManifest
 } from './packingProofIdb';
+import type {
+  WorkerChunkWriterResponse,
+  WorkerWriteChunkRequest
+} from './chunkWriter.worker';
 import { isQuotaExceededError } from './storageQuota';
+
+interface PendingWorkerJob {
+  resolve: (byteLength: number) => void;
+  reject: (err: Error) => void;
+}
+
+let sharedChunkWorker: Worker | null = null;
+let sharedChunkWorkerFailed = false;
+let nextWorkerReqId = 1;
+const pendingWorkerJobs = new Map<number, PendingWorkerJob>();
+
+function getOrCreateChunkWriterWorker(): Worker | null {
+  if (sharedChunkWorkerFailed || typeof Worker !== 'function') {
+    return null;
+  }
+
+  if (sharedChunkWorker) {
+    return sharedChunkWorker;
+  }
+
+  try {
+    const worker = new Worker(
+      new URL('./chunkWriter.worker.ts', import.meta.url),
+      { type: 'module' }
+    );
+
+    worker.onmessage = (event: MessageEvent<WorkerChunkWriterResponse>) => {
+      const msg = event.data;
+      if (!msg || typeof msg.id !== 'number') {
+        return;
+      }
+      const pending = pendingWorkerJobs.get(msg.id);
+      if (!pending) {
+        return;
+      }
+      pendingWorkerJobs.delete(msg.id);
+
+      if (msg.ok) {
+        pending.resolve(msg.byteLength);
+      } else if (msg.isQuotaError) {
+        pending.reject(new QuotaExceededChunkError(msg.message));
+      } else {
+        pending.reject(new Error(msg.message));
+      }
+    };
+
+    worker.onerror = () => {
+      sharedChunkWorkerFailed = true;
+      sharedChunkWorker = null;
+      for (const [id, pending] of pendingWorkerJobs.entries()) {
+        pendingWorkerJobs.delete(id);
+        pending.reject(new Error('CHUNK_WORKER_RUNTIME_ERROR'));
+      }
+    };
+
+    sharedChunkWorker = worker;
+    return worker;
+  } catch {
+    sharedChunkWorkerFailed = true;
+    return null;
+  }
+}
+
+function writeChunkViaWorker(
+  worker: Worker,
+  recordingId: string,
+  seq: number,
+  ownerUserId: string,
+  blob: Blob
+): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const id = nextWorkerReqId++;
+    pendingWorkerJobs.set(id, { resolve, reject });
+    const req: WorkerWriteChunkRequest = {
+      type: 'write-chunk',
+      id,
+      recordingId,
+      seq,
+      ownerUserId,
+      blob
+    };
+    try {
+      worker.postMessage(req);
+    } catch (err) {
+      pendingWorkerJobs.delete(id);
+      reject(
+        err instanceof Error
+          ? err
+          : new Error('Không thể gửi chunk sang luồng Worker.')
+      );
+    }
+  });
+}
 
 export interface ChunkWriterSnapshot {
   recordingId: string;
@@ -144,21 +241,57 @@ export class SerializedChunkWriter {
         throw new Error('Phiên lưu tạm đã chốt manifest.');
       }
 
-      const buffer = await blobToArrayBuffer(blob);
-      if (buffer.byteLength === 0) {
-        return;
-      }
-
       const nextSeq = this.committedChunks;
 
       try {
-        if (this.options.beforeChunkTransaction) {
-          await this.options.beforeChunkTransaction(nextSeq, buffer.byteLength);
+        const worker = !this.options.beforeChunkTransaction
+          ? getOrCreateChunkWriterWorker()
+          : null;
+
+        let committedLen = 0;
+
+        if (worker) {
+          try {
+            committedLen = await writeChunkViaWorker(
+              worker,
+              this.options.recordingId,
+              nextSeq,
+              this.options.ownerUserId,
+              blob
+            );
+          } catch (workerErr) {
+            if (
+              workerErr instanceof QuotaExceededChunkError ||
+              isQuotaExceededError(workerErr)
+            ) {
+              throw workerErr;
+            }
+            // Fall back transparently to main-thread IDB transaction if Worker failed
+            const fallbackBuf = await blobToArrayBuffer(blob);
+            if (fallbackBuf.byteLength === 0) {
+              return;
+            }
+            await this.commitChunkTransaction(nextSeq, fallbackBuf);
+            committedLen = fallbackBuf.byteLength;
+          }
+        } else {
+          const buffer = await blobToArrayBuffer(blob);
+          if (buffer.byteLength === 0) {
+            return;
+          }
+          if (this.options.beforeChunkTransaction) {
+            await this.options.beforeChunkTransaction(nextSeq, buffer.byteLength);
+          }
+          await this.commitChunkTransaction(nextSeq, buffer);
+          committedLen = buffer.byteLength;
         }
 
-        await this.commitChunkTransaction(nextSeq, buffer);
+        if (committedLen === 0) {
+          return;
+        }
+
         this.committedChunks = nextSeq + 1;
-        this.committedBytes += buffer.byteLength;
+        this.committedBytes += committedLen;
         this.options.onProgress?.(this.getSnapshot());
       } catch (err) {
         if (err instanceof QuotaExceededChunkError || isQuotaExceededError(err)) {
@@ -202,23 +335,30 @@ export class SerializedChunkWriter {
 
     await this.writeQueue;
 
-    const committedList = await readRecordingChunksForUser(
-      this.options.recordingId,
-      this.options.ownerUserId
-    );
-
     let contiguousCount = 0;
     let actualTotalBytes = 0;
-    for (let i = 0; i < committedList.length; i += 1) {
-      if (committedList[i].seq !== i) {
-        break;
+
+    const intactFast = await this.verifyCommittedChunkKeysFast();
+    if (intactFast) {
+      contiguousCount = this.committedChunks;
+      actualTotalBytes = this.committedBytes;
+    } else {
+      const committedList = await readRecordingChunksForUser(
+        this.options.recordingId,
+        this.options.ownerUserId
+      );
+
+      for (let i = 0; i < committedList.length; i += 1) {
+        if (committedList[i].seq !== i) {
+          break;
+        }
+        const len = getChunkPayloadByteLength(committedList[i]);
+        if (len <= 0) {
+          break;
+        }
+        contiguousCount += 1;
+        actualTotalBytes += len;
       }
-      const len = committedList[i].data?.byteLength ?? 0;
-      if (len <= 0) {
-        break;
-      }
-      contiguousCount += 1;
-      actualTotalBytes += len;
     }
 
     this.committedChunks = contiguousCount;
@@ -286,6 +426,48 @@ export class SerializedChunkWriter {
     return finalizedManifest;
   }
 
+  private async verifyCommittedChunkKeysFast(): Promise<boolean> {
+    try {
+      const db = await openPackingProofDb();
+      return await new Promise<boolean>((resolve) => {
+        const tx = db.transaction([RECORDING_CHUNKS_STORE], 'readonly');
+        const chunkStore = tx.objectStore(RECORDING_CHUNKS_STORE);
+        if (typeof chunkStore.getAllKeys !== 'function') {
+          resolve(false);
+          return;
+        }
+
+        const range = IDBKeyRange.bound(
+          [this.options.recordingId, 0],
+          [this.options.recordingId, Number.MAX_SAFE_INTEGER]
+        );
+        const req = chunkStore.getAllKeys(range);
+        req.onsuccess = () => {
+          const keys = req.result ?? [];
+          if (keys.length !== this.committedChunks) {
+            resolve(false);
+            return;
+          }
+          for (let i = 0; i < keys.length; i += 1) {
+            const key = keys[i];
+            if (
+              !Array.isArray(key) ||
+              key[0] !== this.options.recordingId ||
+              key[1] !== i
+            ) {
+              resolve(false);
+              return;
+            }
+          }
+          resolve(true);
+        };
+        req.onerror = () => resolve(false);
+      });
+    } catch {
+      return false;
+    }
+  }
+
   private async commitChunkTransaction(seq: number, buffer: ArrayBuffer): Promise<void> {
     const db = await openPackingProofDb();
     const nowIso = new Date().toISOString();
@@ -300,12 +482,8 @@ export class SerializedChunkWriter {
     };
 
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(
-        [RECORDING_CHUNKS_STORE, LOCAL_RECORDINGS_STORE],
-        'readwrite'
-      );
+      const tx = db.transaction([RECORDING_CHUNKS_STORE], 'readwrite');
       const chunkStore = tx.objectStore(RECORDING_CHUNKS_STORE);
-      const recStore = tx.objectStore(LOCAL_RECORDINGS_STORE);
 
       const addReq = chunkStore.put(chunkRecord);
       addReq.onerror = () => {
@@ -313,19 +491,6 @@ export class SerializedChunkWriter {
           reject(new QuotaExceededChunkError());
         } else {
           reject(addReq.error ?? new Error('Không thể ghi chunk video vào IndexedDB.'));
-        }
-      };
-
-      const recGet = recStore.get(this.options.recordingId);
-      recGet.onsuccess = () => {
-        const existing = recGet.result as LocalRecordingManifest | undefined;
-        if (existing && existing.ownerUserId === this.options.ownerUserId) {
-          recStore.put({
-            ...existing,
-            chunkCount: seq + 1,
-            totalBytes: this.committedBytes + buffer.byteLength,
-            updatedAt: nowIso
-          });
         }
       };
 

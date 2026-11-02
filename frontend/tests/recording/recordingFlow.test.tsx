@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import { Blob as NodeNativeBlob } from 'node:buffer';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -6,13 +7,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../src/app/authStore';
 import type { AuthMe } from '../../src/app/types';
 import { RecorderController } from '../../src/features/recording/RecorderController';
+import {
+  acquireRecordingMediaStream,
+  negotiateSupportedMimeType,
+  PREFERRED_VIDEO_AUDIO_MIME_TYPES,
+  PREFERRED_VIDEO_MIME_TYPES
+} from '../../src/features/recording/mediaCapabilities';
 import { RecordingPage } from '../../src/features/recording/RecordingPage';
-import type { ScannerAdapter, ScannerDecodedEvent } from '../../src/features/recording/ScannerView';
+import {
+  createDefaultZxingScannerAdapter,
+  type ScannerAdapter,
+  type ScannerDecodedEvent
+} from '../../src/features/recording/ScannerView';
 import {
   closeAndDeletePackingProofDbForTests,
   getLocalRecordingForUser,
+  openPackingProofDb,
+  putLocalRecordingManifest,
+  RECORDING_CHUNKS_STORE,
+  verifyLocalRecordingIntegrity,
   wirePendingUploadsBridge
 } from '../../src/features/upload-queue/db/packingProofIdb';
+import { IndexedDbTusFileSource } from '../../src/features/upload-queue/IndexedDbTusFileSource';
 
 const OPERATOR_ID = '11111111-1111-1111-1111-111111111111';
 const SHOP_ID = '22222222-2222-2222-2222-222222222222';
@@ -80,6 +96,8 @@ class ControlledFakeMediaRecorder {
 
   public state: RecordingState = 'inactive';
   public mimeType: string;
+  public receivedOptions?: MediaRecorderOptions;
+  public startedTimesliceMs?: number;
   public onstart: (() => void) | null = null;
   public ondataavailable: ((ev: BlobEvent) => void) | null = null;
   public onerror: ((ev: Event) => void) | null = null;
@@ -87,11 +105,13 @@ class ControlledFakeMediaRecorder {
   public startCalledOrder = 0;
 
   constructor(_stream: MediaStream, options?: MediaRecorderOptions) {
+    this.receivedOptions = options;
     this.mimeType = options?.mimeType || 'video/webm;codecs=vp8';
     ControlledFakeMediaRecorder.instances.push(this);
   }
 
-  public start(): void {
+  public start(timeslice?: number): void {
+    this.startedTimesliceMs = timeslice;
     this.state = 'recording';
     if (ControlledFakeMediaRecorder.autoFireOnStart) {
       this.fireStartNow();
@@ -661,6 +681,9 @@ describe('Phase 2 Single-Owner Camera Lifecycle, MediaRecorder Gate & Interrupti
     );
 
     await screen.findByTestId('scanner-view');
+    await waitFor(() => {
+      expect(emitScanCallback).not.toBeNull();
+    });
     await act(async () => {
       emitScanCallback?.({ rawText: '00987654321', formatHint: 'OneDimensional' });
     });
@@ -706,5 +729,220 @@ describe('Phase 2 Single-Owner Camera Lifecycle, MediaRecorder Gate & Interrupti
     expect(
       screen.getByRole('button', { name: /Quét & Quay đơn tiếp theo/i })
     ).toBeInTheDocument();
+  });
+
+  it('negotiates standard browser MIME types, acquires 1080p stream, and supports Native BarcodeDetector + zero-copy Blob chunks', async () => {
+    for (const mime of [
+      ...PREFERRED_VIDEO_MIME_TYPES,
+      ...PREFERRED_VIDEO_AUDIO_MIME_TYPES
+    ]) {
+      expect(mime.toLowerCase()).not.toContain('42e01e');
+    }
+
+    ControlledFakeMediaRecorder.isTypeSupported.mockImplementation(
+      (mime: string) =>
+        mime.startsWith('video/mp4') || mime.startsWith('video/webm')
+    );
+    expect(negotiateSupportedMimeType(false).mimeType).toBe(
+      'video/mp4;codecs=avc1.640028'
+    );
+
+    const track1080 = Object.assign(new FakeMediaStreamTrack(false), {
+      getSettings: () => ({ width: 1080, height: 1920, frameRate: 30 }),
+      getCapabilities: () => ({}) as unknown as MediaTrackCapabilities
+    });
+
+    const getUserMediaMock = vi.fn(async () =>
+      new FakeMediaStream([track1080]) as unknown as MediaStream
+    );
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        ...navigator.mediaDevices,
+        getUserMedia: getUserMediaMock
+      }
+    });
+
+    const origBarcodeDetector = (globalThis as { BarcodeDetector?: unknown }).BarcodeDetector;
+
+    try {
+      const acquired1080 = await acquireRecordingMediaStream({
+        preferredTier: '1080p',
+        enableAudio: false
+      });
+      expect(acquired1080.resolutionTier).toBe('1080p');
+      const firstGumArg = (
+        getUserMediaMock.mock.calls[0] as unknown as [MediaStreamConstraints]
+      )[0];
+      expect(firstGumArg.video).toEqual({
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30, max: 30 }
+      });
+
+      ControlledFakeMediaRecorder.autoFireOnStart = true;
+      const controller = new RecorderController({
+        ensureScannerStopped: async () => {},
+        onStateChange: () => {},
+        onStreamChange: () => {},
+        postEvent: vi.fn(async () => ({}) as never)
+      });
+
+      await controller.start({
+        session: {
+          id: 'rec-perf-1080',
+          ownerUserId: OPERATOR_ID,
+          ownerEmail: 'operator@congty.vn',
+          ownerFullName: 'Nguyễn Văn Đóng Gói',
+          shopId: SHOP_ID,
+          shopName: 'Shop A',
+          warehouseId: WH_ID,
+          warehouseName: 'Kho TP.HCM 01',
+          packingStationId: null,
+          trackingNumber: '0010803001',
+          safeTrackingSegment: '0010803001',
+          carrierCode: 'SPX',
+          tikTokOrderId: null,
+          source: 'RecordedInBrowser',
+          manualEntryReason: null,
+          linkedFromRecordingId: null,
+          captureStatus: 'Created',
+          storageStatus: 'AwaitingUpload',
+          previewStatus: 'NotRequired',
+          clientMimeType: null,
+          durationSeconds: null,
+          startedAtUtc: null,
+          endedAtUtc: null,
+          storedAtUtc: null,
+          hold: false,
+          lastErrorCode: null,
+          userSafeErrorMessage: null,
+          createdAtUtc: new Date().toISOString(),
+          updatedAtUtc: new Date().toISOString()
+        },
+        limits: {
+          maxRecordingSeconds: 600,
+          maxUploadBytes: 536870912,
+          maxLocalPendingRecordings: 3,
+          enableAudioRecording: false
+        },
+        preferredTier: '1080p'
+      });
+
+      const instance = ControlledFakeMediaRecorder.instances.at(-1);
+      expect(instance?.mimeType).toBe('video/mp4;codecs=avc1.640028');
+      expect(instance?.receivedOptions?.videoBitsPerSecond).toBe(4_000_000);
+      expect(instance?.startedTimesliceMs).toBe(3000);
+      await controller.stop();
+
+      // Verify Native `BarcodeDetector` scanner fast-path
+      const detectSpy = vi.fn(async () => [
+        { rawValue: '179154472661118', format: 'code_128' }
+      ]);
+      class FakeBarcodeDetector {
+        public static async getSupportedFormats(): Promise<string[]> {
+          return ['qr_code', 'code_128', 'ean_13'];
+        }
+        public detect = detectSpy;
+      }
+      (globalThis as { BarcodeDetector?: unknown }).BarcodeDetector =
+        FakeBarcodeDetector;
+
+      const decodedEvents: ScannerDecodedEvent[] = [];
+      const fakeVideoEl = document.createElement('video');
+      Object.defineProperty(fakeVideoEl, 'readyState', { value: 4 });
+      Object.defineProperty(fakeVideoEl, 'videoWidth', { value: 1280 });
+      Object.defineProperty(fakeVideoEl, 'videoHeight', { value: 720 });
+      fakeVideoEl.play = vi.fn(async () => {});
+
+      const defaultScanner = createDefaultZxingScannerAdapter();
+      const handle = await defaultScanner.start({
+        videoElement: fakeVideoEl,
+        onDecoded: (evt) => decodedEvents.push(evt)
+      });
+      await waitFor(() => {
+        expect(decodedEvents.length).toBeGreaterThanOrEqual(1);
+      });
+      expect(decodedEvents[0]).toEqual({
+        rawText: '179154472661118',
+        formatHint: 'OneDimensional'
+      });
+      await handle.stop();
+
+      // Verify zero-copy `Blob` chunks stored directly in IndexedDB pass integrity & tus slicing
+      const blobRecId = 'rec-zerocopy-blob-001';
+      const nowIso = new Date().toISOString();
+      await putLocalRecordingManifest(
+        {
+          recordingId: blobRecId,
+          ownerUserId: OPERATOR_ID,
+          shopId: SHOP_ID,
+          warehouseId: WH_ID,
+          shopName: 'Shop A',
+          warehouseName: 'Kho TP.HCM 01',
+          trackingNumber: '179154472661118',
+          mimeType: 'video/mp4;codecs=avc1.640028',
+          captureStatus: 'Captured',
+          localSyncState: 'ReadyToUpload',
+          chunkCount: 2,
+          totalBytes: 1500,
+          durationSeconds: 6,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        },
+        OPERATOR_ID
+      );
+      const db = await openPackingProofDb();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction([RECORDING_CHUNKS_STORE], 'readwrite');
+        const store = tx.objectStore(RECORDING_CHUNKS_STORE);
+        store.put({
+          recordingId: blobRecId,
+          seq: 0,
+          ownerUserId: OPERATOR_ID,
+          blob: new NodeNativeBlob([new Uint8Array(1000).fill(0x11)], {
+            type: 'video/mp4'
+          }) as unknown as Blob,
+          byteLength: 1000,
+          createdAt: nowIso
+        });
+        store.put({
+          recordingId: blobRecId,
+          seq: 1,
+          ownerUserId: OPERATOR_ID,
+          blob: new NodeNativeBlob([new Uint8Array(500).fill(0x22)], {
+            type: 'video/mp4'
+          }) as unknown as Blob,
+          byteLength: 500,
+          createdAt: nowIso
+        });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+
+      const blobIntegrity = await verifyLocalRecordingIntegrity(blobRecId, OPERATOR_ID);
+      expect(blobIntegrity.isRecoverable).toBe(true);
+      expect(blobIntegrity.actualBytes).toBe(1500);
+
+      const tusSource = await IndexedDbTusFileSource.open(
+        blobRecId,
+        OPERATOR_ID,
+        'video/mp4'
+      );
+      const slice = await tusSource.slice(500, 1250);
+      expect(slice.value.size).toBe(750);
+      tusSource.close();
+    } finally {
+      if (origBarcodeDetector !== undefined) {
+        (globalThis as { BarcodeDetector?: unknown }).BarcodeDetector =
+          origBarcodeDetector;
+      } else {
+        delete (globalThis as { BarcodeDetector?: unknown }).BarcodeDetector;
+      }
+      ControlledFakeMediaRecorder.isTypeSupported.mockImplementation(
+        (mime: string) => mime.startsWith('video/webm')
+      );
+    }
   });
 });

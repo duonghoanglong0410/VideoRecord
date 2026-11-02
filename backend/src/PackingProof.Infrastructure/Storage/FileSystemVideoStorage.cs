@@ -11,6 +11,7 @@ namespace PackingProof.Infrastructure.Storage;
 public sealed class FileSystemVideoStorage : IVideoStorage
 {
     public const string StorageMarkerFileName = ".packingproof-storage-id";
+    public const string WriteOnceHealthDirectoryName = ".packingproof-meta";
     private const int StreamBufferBytes = 131_072;
 
     private readonly PackingProofOptions _options;
@@ -82,6 +83,15 @@ public sealed class FileSystemVideoStorage : IVideoStorage
         // SynologyMounted mode: NEVER auto-create NAS_ROOT_PATH!
         if (!Directory.Exists(fullRoot))
         {
+            WindowsUncShareConnector.EnsureConnectedBestEffort(
+                _options.NasRootPath,
+                _options.NasSmbUsername,
+                _options.NasSmbPassword,
+                _logger);
+        }
+
+        if (!Directory.Exists(fullRoot))
+        {
             return new StorageHealthReport(
                 Mode: StorageMode.SynologyMounted,
                 IsHealthy: false,
@@ -107,7 +117,9 @@ public sealed class FileSystemVideoStorage : IVideoStorage
                 CheckedAtUtc: now);
         }
 
-        var writable = await ProbeReadWriteCapabilityAsync(fullRoot, ct);
+        var writable = _options.NasWriteOnceMode
+            ? ProbeWriteOnceCapability(fullRoot)
+            : await ProbeReadWriteCapabilityAsync(fullRoot, ct);
         return new StorageHealthReport(
             Mode: StorageMode.SynologyMounted,
             IsHealthy: writable,
@@ -170,6 +182,17 @@ public sealed class FileSystemVideoStorage : IVideoStorage
                 "Không thể tạo thư mục lưu trữ trên kho lưu trữ (thiếu quyền ghi hoặc mất kết nối).",
                 ex.Message,
                 ex);
+        }
+
+        if (_options.NasWriteOnceMode)
+        {
+            return await CommitDirectWriteOnceAsync(
+                stagingFilePath,
+                targetFullPath,
+                canonicalRelativePath,
+                expectedBytes,
+                normalizedExpectedHash,
+                ct);
         }
 
         var safeLease = PathSegmentSanitizer.ToSafeSegment(
@@ -319,6 +342,14 @@ public sealed class FileSystemVideoStorage : IVideoStorage
             File.Delete(targetFullPath);
             return true;
         }
+        catch (UnauthorizedAccessException ex) when (_options.NasWriteOnceMode)
+        {
+            throw new StorageUnavailableException(
+                "STORAGE_WORM_DELETE_DENIED",
+                "Kho lưu trữ NAS đang bật chế độ chống xóa (Write-Once / Append-Only). Tài khoản NAS hiện tại không có quyền xóa tệp vật lý.",
+                ex.Message,
+                ex);
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             throw new StorageUnavailableException(
@@ -359,6 +390,103 @@ public sealed class FileSystemVideoStorage : IVideoStorage
 
         var hashBytes = hasher.GetHashAndReset();
         return (totalBytes, Convert.ToHexStringLower(hashBytes));
+    }
+
+    private async Task<StoredFileReceipt> CommitDirectWriteOnceAsync(
+        string stagingFilePath,
+        string targetFullPath,
+        string canonicalRelativePath,
+        long expectedBytes,
+        string normalizedExpectedHash,
+        CancellationToken ct)
+    {
+        var createdByThisAttempt = false;
+
+        try
+        {
+            await using (var sourceStream = new FileStream(
+                stagingFilePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: StreamBufferBytes,
+                options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (var directWriteStream = new FileStream(
+                targetFullPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: StreamBufferBytes,
+                options: FileOptions.Asynchronous))
+            {
+                createdByThisAttempt = true;
+                await sourceStream.CopyToAsync(directWriteStream, StreamBufferBytes, ct);
+                await directWriteStream.FlushAsync(ct);
+                directWriteStream.Flush(flushToDisk: true);
+            }
+
+            // Re-open target file directly from the WORM/NAS share, read back ALL bytes,
+            // and verify exact byte count and SHA-256 without requiring rename/delete permissions.
+            var (verifiedBytes, verifiedSha256) = await ComputeFileSizeAndSha256Async(targetFullPath, ct);
+
+            if (verifiedBytes != expectedBytes ||
+                !string.Equals(verifiedSha256, normalizedExpectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                TryDeleteFileBestEffort(targetFullPath);
+                throw new StorageUnavailableException(
+                    "STORAGE_VERIFY_MISMATCH",
+                    "Dữ liệu đọc lại từ kho lưu trữ NAS sau khi ghi không khớp kích thước hoặc mã băm SHA-256.",
+                    $"Expected {expectedBytes} bytes / {normalizedExpectedHash}, got {verifiedBytes} bytes / {verifiedSha256}.");
+            }
+
+            return new StoredFileReceipt(
+                RelativePath: canonicalRelativePath,
+                SizeBytes: verifiedBytes,
+                Sha256: verifiedSha256,
+                ReconciledExisting: false,
+                VerifiedAtUtc: DateTime.UtcNow);
+        }
+        catch (IOException) when (!createdByThisAttempt && File.Exists(targetFullPath))
+        {
+            return await ReconcileOrThrowConflictAsync(
+                targetFullPath,
+                canonicalRelativePath,
+                expectedBytes,
+                normalizedExpectedHash,
+                ct);
+        }
+        catch (StorageConflictException)
+        {
+            throw;
+        }
+        catch (StorageUnavailableException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            if (createdByThisAttempt)
+            {
+                TryDeleteFileBestEffort(targetFullPath);
+            }
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (createdByThisAttempt)
+            {
+                TryDeleteFileBestEffort(targetFullPath);
+            }
+            _logger.LogWarning(
+                ex,
+                "I/O error while committing video in Write-Once mode to storage target '{RelativePath}'.",
+                canonicalRelativePath);
+            throw new StorageUnavailableException(
+                "STORAGE_IO_ERROR",
+                "Lỗi đọc/ghi kho lưu trữ NAS (có thể do đầy dung lượng, mất kết nối SMB hoặc thiếu quyền ghi). Bản lưu đệm trên máy chủ vẫn được giữ nguyên để thử lại.",
+                ex.Message,
+                ex);
+        }
     }
 
     private async Task<StoredFileReceipt> ReconcileOrThrowConflictAsync(
@@ -439,6 +567,15 @@ public sealed class FileSystemVideoStorage : IVideoStorage
         // SynologyMounted mode: NEVER create NAS_ROOT_PATH!
         if (!Directory.Exists(fullRoot))
         {
+            WindowsUncShareConnector.EnsureConnectedBestEffort(
+                _options.NasRootPath,
+                _options.NasSmbUsername,
+                _options.NasSmbPassword,
+                _logger);
+        }
+
+        if (!Directory.Exists(fullRoot))
+        {
             throw new StorageUnavailableException(
                 "NAS_STORAGE_MARKER_INVALID",
                 "Không tìm thấy thư mục mount Synology NAS. Hệ thống không tự tạo thư mục cục bộ thay thế và sẽ giữ nguyên dữ liệu ở vùng đệm.");
@@ -453,7 +590,10 @@ public sealed class FileSystemVideoStorage : IVideoStorage
                 markerError);
         }
 
-        if (!await ProbeReadWriteCapabilityAsync(fullRoot, ct))
+        var canWrite = _options.NasWriteOnceMode
+            ? ProbeWriteOnceCapability(fullRoot)
+            : await ProbeReadWriteCapabilityAsync(fullRoot, ct);
+        if (!canWrite)
         {
             throw new StorageUnavailableException(
                 "NAS_WRITE_UNAVAILABLE",
@@ -480,6 +620,15 @@ public sealed class FileSystemVideoStorage : IVideoStorage
         }
 
         // SynologyMounted mode: verify mount & marker before serving reads
+        if (!Directory.Exists(fullRoot))
+        {
+            WindowsUncShareConnector.EnsureConnectedBestEffort(
+                _options.NasRootPath,
+                _options.NasSmbUsername,
+                _options.NasSmbPassword,
+                _logger);
+        }
+
         if (!Directory.Exists(fullRoot))
         {
             throw new StorageUnavailableException(
@@ -541,6 +690,20 @@ public sealed class FileSystemVideoStorage : IVideoStorage
         if (!File.Exists(markerPath))
         {
             await File.WriteAllTextAsync(markerPath, _options.StorageId, Encoding.UTF8, ct);
+        }
+    }
+
+    private static bool ProbeWriteOnceCapability(string fullRoot)
+    {
+        try
+        {
+            var metaDir = PathSegmentSanitizer.CombineWithinRoot(fullRoot, WriteOnceHealthDirectoryName);
+            Directory.CreateDirectory(metaDir);
+            return Directory.Exists(metaDir);
+        }
+        catch
+        {
+            return false;
         }
     }
 

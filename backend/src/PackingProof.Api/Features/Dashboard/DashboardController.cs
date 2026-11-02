@@ -78,7 +78,10 @@ public sealed class DashboardController : ControllerBase
 
         var baseRecordings = _db.Recordings
             .AsNoTracking()
-            .Where(r => !r.IsSoftDeleted);
+            .Where(r =>
+                !r.IsSoftDeleted &&
+                (r.CaptureStatus == CaptureStatus.Captured ||
+                 r.CaptureStatus == CaptureStatus.Interrupted));
 
         var hasVideoViewScope = ScopeQueryExtensions.TryApplyRecordingPermissionScope(
             baseRecordings,

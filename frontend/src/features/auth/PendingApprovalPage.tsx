@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { Clock, LogOut, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../app/authStore';
 import { StorageModeBanner } from '../../app/StorageModeBanner';
 
@@ -25,7 +26,7 @@ export function PendingApprovalPage() {
       if (updated?.approvalStatus === 'Active') {
         navigate('/', { replace: true });
       } else {
-        setStatusNotice('Tài khoản vẫn đang ở trạng thái chờ Quản trị viên phê duyệt.');
+        setStatusNotice('Tài khoản vẫn đang chờ Quản lý kích hoạt.');
       }
     } finally {
       setIsChecking(false);
@@ -44,7 +45,10 @@ export function PendingApprovalPage() {
       <div className="auth-container">
         <div className="auth-card">
           <div className="brand-header">
-            <span className="brand-badge">Chờ phê duyệt</span>
+            <span className="brand-badge">
+              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              Chờ phê duyệt
+            </span>
             <h1 className="brand-title">Tài khoản đang chờ phê duyệt</h1>
             <p className="brand-subtitle">
               Xin chào <strong>{user.fullName}</strong> ({user.email}).
@@ -52,9 +56,9 @@ export function PendingApprovalPage() {
           </div>
 
           <div className="alert alert-info">
-            Tài khoản của bạn đã được ghi nhận thành công nhưng chưa được cấp quyền truy cập dữ
-            liệu nghiệp vụ. Vui lòng liên hệ Quản trị viên Shop hoặc Quản trị hệ thống để được
-            phê duyệt và phân bổ Shop/Kho làm việc.
+            Bạn đã đăng ký thành công. Vui lòng báo <strong>Quản lý Shop</strong> hoặc{' '}
+            <strong>Quản trị viên</strong> mở mục <em>Nhân sự</em> để duyệt tài khoản và chọn
+            Shop/Kho làm việc cho bạn.
           </div>
 
           {statusNotice && (
@@ -63,13 +67,17 @@ export function PendingApprovalPage() {
             </div>
           )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="flex flex-col gap-2.5">
             <button
               type="button"
               className="btn btn-primary btn-full"
               onClick={() => void handleCheckStatus()}
               disabled={isChecking}
             >
+              <RefreshCw
+                className={`h-4 w-4 ${isChecking ? 'animate-spin' : ''}`}
+                aria-hidden="true"
+              />
               {isChecking ? 'Đang kiểm tra...' : 'Kiểm tra lại trạng thái duyệt'}
             </button>
 
@@ -78,6 +86,7 @@ export function PendingApprovalPage() {
               className="btn btn-outline btn-full"
               onClick={() => void handleLogout()}
             >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
               Đăng xuất
             </button>
           </div>
@@ -86,4 +95,3 @@ export function PendingApprovalPage() {
     </div>
   );
 }
-

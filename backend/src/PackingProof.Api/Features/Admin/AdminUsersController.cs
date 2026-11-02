@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -518,6 +519,313 @@ public sealed class AdminUsersController : ControllerBase
             Email: user.Email ?? string.Empty,
             ResetToken: oneTimeResetToken,
             Message: "Đã tạo mã đặt lại mật khẩu một lần và thu hồi các phiên đăng nhập cũ. Vui lòng chuyển mã này trực tiếp cho nhân viên qua kênh nội bộ an toàn."));
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> CreateUser(
+        [FromBody] CreateAdminUserRequest request,
+        CancellationToken ct)
+    {
+        var actorId = HttpContext.GetRequiredUserId();
+        var actorAccess = await _scopeAuth.GetEffectiveAccessAsync(actorId, ct);
+
+        if (!actorAccess.IsActive || !actorAccess.AllPermissions.Contains(PermissionCatalog.UserManage))
+        {
+            await AppendDeniedAuditAsync(actorId, "admin.user.create", null, "FORBIDDEN_USER_MANAGE", ct);
+            return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(
+                "FORBIDDEN",
+                "Bạn không có quyền tạo tài khoản nhân viên mới."));
+        }
+
+        var fullName = request.FullName?.Trim() ?? string.Empty;
+        var email = request.Email?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(fullName) || fullName.Length > 200)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập họ và tên hợp lệ (tối đa 200 ký tự)."));
+        }
+
+        if (string.IsNullOrWhiteSpace(email) || !new EmailAddressAttribute().IsValid(email))
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập địa chỉ email hợp lệ."));
+        }
+
+        if (string.IsNullOrEmpty(request.Password))
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập mật khẩu khởi tạo cho tài khoản."));
+        }
+
+        var proposals = (request.Grants ?? [])
+            .Select(g => new GrantProposal(g.RoleId, g.ScopeType, g.ShopId, g.WarehouseId))
+            .ToList();
+
+        if (!actorAccess.IsSuperAdmin && proposals.Count == 0)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "GRANTS_REQUIRED",
+                "Vui lòng chọn ít nhất một Vai trò và phạm vi Shop/Kho cho nhân viên mới."));
+        }
+
+        if (request.DefaultShopId.HasValue || request.DefaultWarehouseId.HasValue)
+        {
+            var defaultScopeCheck = await ValidateDefaultShopWarehouseForActorAsync(
+                actorId,
+                request.DefaultShopId,
+                request.DefaultWarehouseId,
+                ct);
+            if (defaultScopeCheck is not null)
+            {
+                await AppendDeniedAuditAsync(actorId, "admin.user.create", null, "OUT_OF_SCOPE_DEFAULT_SHOP", ct);
+                return defaultScopeCheck;
+            }
+        }
+
+        var existingByEmail = await _userManager.FindByEmailAsync(email);
+        if (existingByEmail is not null)
+        {
+            return Conflict(new ApiErrorResponse(
+                "DUPLICATE_EMAIL",
+                "Địa chỉ email này đã được sử dụng cho một tài khoản khác."));
+        }
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var user = new ApplicationUser
+        {
+            UserName = email,
+            Email = email,
+            FullName = fullName,
+            ApprovalStatus = ApprovalStatus.Active,
+            CreatedAtUtc = now,
+            ApprovedAtUtc = now,
+            ApprovedByUserId = actorId,
+            DefaultShopId = request.DefaultShopId,
+            DefaultWarehouseId = request.DefaultWarehouseId,
+            ForcePasswordReset = request.ForcePasswordReset
+        };
+
+        var createResult = await _userManager.CreateAsync(user, request.Password);
+        if (!createResult.Succeeded)
+        {
+            await tx.RollbackAsync(ct);
+            var vnDetails = IdentityErrorTranslator.ToVietnamese(createResult.Errors);
+            return BadRequest(new ApiErrorResponse(
+                "CREATE_USER_FAILED",
+                vnDetails.FirstOrDefault() ?? "Không thể tạo tài khoản mới.",
+                vnDetails));
+        }
+
+        if (proposals.Count > 0)
+        {
+            var grantValidation = await _grantValidator.ValidateGrantsAssignmentAsync(actorId, user.Id, proposals, ct);
+            if (!grantValidation.IsAllowed)
+            {
+                await tx.RollbackAsync(ct);
+                await AppendDeniedAuditAsync(actorId, "admin.user.create", null, grantValidation.ErrorCode, ct);
+                return ToValidationActionResult(grantValidation);
+            }
+
+            await ReplaceUserGrantsInternalAsync(user, actorId, proposals, ct);
+            await SyncInferredDefaultScopeIfUnsetAsync(user, ct);
+            await _userManager.UpdateAsync(user);
+        }
+
+        await tx.CommitAsync(ct);
+
+        await _auditLogger.AppendAsync(new AuditEntryRequest(
+            Action: "admin.user.create",
+            EntityType: "User",
+            EntityId: user.Id.ToString(),
+            Outcome: AuditOutcome.Success,
+            ActorUserId: actorId,
+            ActorEmail: HttpContext.GetUserEmail(),
+            ShopId: user.DefaultShopId,
+            WarehouseId: user.DefaultWarehouseId,
+            IpAddress: HttpContext.GetClientIp(),
+            UserAgent: HttpContext.GetUserAgent(),
+            Metadata: new
+            {
+                targetEmail = user.Email,
+                fullName = user.FullName,
+                grantCount = proposals.Count
+            }), ct);
+
+        var reloaded = await LoadUserWithGrantsAsync(user.Id, ct);
+        return StatusCode(StatusCodes.Status201Created, MapToAdminUserSummary(reloaded!));
+    }
+
+    [HttpPut("{id:guid}/profile")]
+    public async Task<IActionResult> UpdateUserProfile(
+        Guid id,
+        [FromBody] UpdateAdminUserProfileRequest request,
+        CancellationToken ct)
+    {
+        var actorId = HttpContext.GetRequiredUserId();
+        var validation = await _grantValidator.ValidateUserManagementActionAsync(
+            actorId,
+            id,
+            "update-profile",
+            ct);
+
+        if (!validation.IsAllowed)
+        {
+            await AppendDeniedAuditAsync(actorId, "admin.user.update_profile", id.ToString(), validation.ErrorCode, ct);
+            return ToValidationActionResult(validation);
+        }
+
+        var fullName = request.FullName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(fullName) || fullName.Length > 200)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Họ và tên bắt buộc và không vượt quá 200 ký tự."));
+        }
+
+        var user = await _userManager.FindByIdAsync(id.ToString());
+        if (user is null)
+        {
+            return NotFound(new ApiErrorResponse("TARGET_USER_NOT_FOUND", "Không tìm thấy người dùng."));
+        }
+
+        if (request.DefaultShopId.HasValue || request.DefaultWarehouseId.HasValue)
+        {
+            var defaultScopeCheck = await ValidateDefaultShopWarehouseForActorAsync(
+                actorId,
+                request.DefaultShopId,
+                request.DefaultWarehouseId,
+                ct);
+            if (defaultScopeCheck is not null)
+            {
+                await AppendDeniedAuditAsync(actorId, "admin.user.update_profile", id.ToString(), "OUT_OF_SCOPE_DEFAULT_SHOP", ct);
+                return defaultScopeCheck;
+            }
+        }
+
+        Guid? resolvedShopId = request.DefaultShopId;
+        if (!resolvedShopId.HasValue && request.DefaultWarehouseId.HasValue)
+        {
+            resolvedShopId = await _db.Warehouses
+                .AsNoTracking()
+                .Where(w => w.Id == request.DefaultWarehouseId.Value)
+                .Select(w => (Guid?)w.ShopId)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        user.FullName = fullName;
+        user.DefaultShopId = resolvedShopId;
+        user.DefaultWarehouseId = request.DefaultWarehouseId;
+
+        await _userManager.UpdateAsync(user);
+
+        await _auditLogger.AppendAsync(new AuditEntryRequest(
+            Action: "admin.user.update_profile",
+            EntityType: "User",
+            EntityId: user.Id.ToString(),
+            Outcome: AuditOutcome.Success,
+            ActorUserId: actorId,
+            ActorEmail: HttpContext.GetUserEmail(),
+            ShopId: user.DefaultShopId,
+            WarehouseId: user.DefaultWarehouseId,
+            IpAddress: HttpContext.GetClientIp(),
+            UserAgent: HttpContext.GetUserAgent(),
+            Metadata: new
+            {
+                targetEmail = user.Email,
+                fullName = user.FullName,
+                defaultShopId = user.DefaultShopId,
+                defaultWarehouseId = user.DefaultWarehouseId
+            }), ct);
+
+        var reloaded = await LoadUserWithGrantsAsync(user.Id, ct);
+        return Ok(MapToAdminUserSummary(reloaded!));
+    }
+
+    [HttpPost("{id:guid}/set-password")]
+    public async Task<IActionResult> SetUserPasswordDirect(
+        Guid id,
+        [FromBody] AdminSetUserPasswordRequest request,
+        CancellationToken ct)
+    {
+        var actorId = HttpContext.GetRequiredUserId();
+        if (actorId == id)
+        {
+            return BadRequest(new ApiErrorResponse(
+                "USE_OWN_CHANGE_PASSWORD",
+                "Để đổi mật khẩu tài khoản của chính bạn, vui lòng mở mục Tài khoản của tôi."));
+        }
+
+        var validation = await _grantValidator.ValidateUserManagementActionAsync(
+            actorId,
+            id,
+            "set-password",
+            ct);
+
+        if (!validation.IsAllowed)
+        {
+            await AppendDeniedAuditAsync(actorId, "admin.user.set_password", id.ToString(), validation.ErrorCode, ct);
+            return ToValidationActionResult(validation);
+        }
+
+        if (string.IsNullOrEmpty(request.NewPassword))
+        {
+            return BadRequest(new ApiErrorResponse(
+                "VALIDATION_ERROR",
+                "Vui lòng nhập mật khẩu mới."));
+        }
+
+        var user = await _userManager.FindByIdAsync(id.ToString());
+        if (user is null)
+        {
+            return NotFound(new ApiErrorResponse("TARGET_USER_NOT_FOUND", "Không tìm thấy người dùng."));
+        }
+
+        var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+        var resetResult = await _userManager.ResetPasswordAsync(user, token, request.NewPassword);
+        if (!resetResult.Succeeded)
+        {
+            var vnDetails = IdentityErrorTranslator.ToVietnamese(resetResult.Errors);
+            return BadRequest(new ApiErrorResponse(
+                "SET_PASSWORD_FAILED",
+                vnDetails.FirstOrDefault() ?? "Mật khẩu mới chưa đáp ứng yêu cầu bảo mật.",
+                vnDetails));
+        }
+
+        user.ForcePasswordReset = request.ForcePasswordReset;
+        user.LockoutEnd = null;
+        user.AccessFailedCount = 0;
+
+        await _userManager.UpdateAsync(user);
+        await _userManager.UpdateSecurityStampAsync(user);
+
+        await _auditLogger.AppendAsync(new AuditEntryRequest(
+            Action: "admin.user.set_password",
+            EntityType: "User",
+            EntityId: user.Id.ToString(),
+            Outcome: AuditOutcome.Success,
+            ActorUserId: actorId,
+            ActorEmail: HttpContext.GetUserEmail(),
+            ShopId: user.DefaultShopId,
+            WarehouseId: user.DefaultWarehouseId,
+            IpAddress: HttpContext.GetClientIp(),
+            UserAgent: HttpContext.GetUserAgent(),
+            Metadata: new
+            {
+                targetEmail = user.Email,
+                forcePasswordReset = request.ForcePasswordReset,
+                sessionsRevoked = true
+            }), ct);
+
+        return Ok(new
+        {
+            message = $"Đã đặt mật khẩu mới cho tài khoản {user.Email} và đăng xuất các thiết bị cũ thành công."
+        });
     }
 
     private async Task ReplaceUserGrantsInternalAsync(

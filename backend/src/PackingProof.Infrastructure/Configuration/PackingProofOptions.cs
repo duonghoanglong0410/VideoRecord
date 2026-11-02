@@ -12,6 +12,9 @@ public sealed class PackingProofOptions
     public string NasRootPath { get; set; } = "./.local-data/storage";
     public string StorageId { get; set; } = "packingproof-local-dev-storage-01";
     public string StagingRootPath { get; set; } = "./.local-data/staging";
+    public bool NasWriteOnceMode { get; set; }
+    public string? NasSmbUsername { get; set; }
+    public string? NasSmbPassword { get; set; }
 
     public int MaxRecordingSeconds { get; set; } = 600;
     public long MaxUploadBytes { get; set; } = 536_870_912;
@@ -64,6 +67,9 @@ public sealed class PackingProofOptions
         opts.NasRootPath = GetString(configuration, "NAS_ROOT_PATH", opts.NasRootPath);
         opts.StorageId = GetString(configuration, "STORAGE_ID", opts.StorageId);
         opts.StagingRootPath = GetString(configuration, "STAGING_ROOT_PATH", opts.StagingRootPath);
+        opts.NasWriteOnceMode = GetBool(configuration, "NAS_WRITE_ONCE_MODE", opts.NasWriteOnceMode);
+        opts.NasSmbUsername = configuration["NAS_SMB_USERNAME"]?.Trim();
+        opts.NasSmbPassword = configuration["NAS_SMB_PASSWORD"];
 
         opts.MaxRecordingSeconds = GetInt(configuration, "MAX_RECORDING_SECONDS", opts.MaxRecordingSeconds);
         opts.MaxUploadBytes = GetLong(configuration, "MAX_UPLOAD_BYTES", opts.MaxUploadBytes);

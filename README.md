@@ -92,8 +92,13 @@ Copy-Item .env.example .env
 > - Ở lần khởi chạy đầu tiên (khi bảng `UserScopeGrants` chưa có `SuperAdmin` nào mang phạm vi `All`), `SystemSeeder` đọc hai biến môi trường `INITIAL_ADMIN_EMAIL` và `INITIAL_ADMIN_PASSWORD` để tạo tài khoản `SuperAdmin` duy nhất ở trạng thái `Active`.
 > - Ngay sau khi đăng nhập thành công và bật **2FA TOTP** tại trang Bảo mật tài khoản (`/account/security`), bạn nên xóa biến `INITIAL_ADMIN_PASSWORD` khỏi môi trường chạy.
 
-### Bước 4A: Chạy chế độ Phát triển (Backend API + Vite Dev Server)
-Mở Terminal 1 — Chạy Backend API (tự động chạy EF Core Migrations & Seed `ShopA` ở chế độ `LocalDevelopment`):
+### Bước 4A: Chạy chế độ Phát triển (Backend API + Vite HTTPS Dev Server)
+**Cách nhanh nhất trên Windows (1 cú nhấp đúp chuột):**
+- Nhấp đúp [`start-dev.bat`](start-dev.bat) ở thư mục gốc để tự động kiểm tra dịch vụ `postgresql-x64-18`, mở 2 cửa sổ độc lập cho Backend (`5080`) và Frontend HTTPS (`https://localhost:5173`), tự sinh chứng chỉ TLS nội bộ cho IP Wi-Fi LAN (`https://<IP_LAN>:5173`) hỗ trợ mở Camera trực tiếp trên cả **iPhone (Safari)** và **Android (Chrome)** và mở trình duyệt.
+- Khi muốn dừng nhanh toàn bộ server dev, nhấp đúp [`stop-dev.bat`](stop-dev.bat).
+
+**Hoặc chạy thủ công từng cửa sổ Terminal:**
+Mở Terminal 1 — Chạy Backend API (tự động nạp `.env`, chạy EF Core Migrations & Seed `ShopA` ở chế độ `LocalDevelopment`):
 ```powershell
 $env:DATABASE_CONNECTION="Host=localhost;Port=5432;Database=packingproof_dev;Username=postgres;Password=YOUR_LOCAL_PG_PASSWORD"
 $env:STORAGE_MODE="LocalDevelopment"

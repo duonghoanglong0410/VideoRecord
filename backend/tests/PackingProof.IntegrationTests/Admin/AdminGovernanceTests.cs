@@ -250,6 +250,110 @@ public sealed class AdminGovernanceTests : IClassFixture<PostgresWebAppFixture>
         }
     }
 
+    [Fact]
+    public async Task WarehousesAndAccountManagement_EnforcesShopScope_SupportsDirectAccountCreation_AndSelfServiceProfile()
+    {
+        var (shopB, _) = await _fixture.EnsureShopBExistsAsync();
+
+        using var superClient = _fixture.CreateSessionClient();
+        await superClient.LoginAsync(PostgresWebAppFixture.SuperAdminEmail, PostgresWebAppFixture.SuperAdminPassword);
+
+        var roles = (await (await superClient.GetAsync("/api/admin/roles"))
+            .Content.ReadFromJsonAsync<List<RoleDto>>(CookieSessionClient.JsonOptions))!;
+        var shops = (await (await superClient.GetAsync("/api/shops"))
+            .Content.ReadFromJsonAsync<AccessibleShopsResponse>(CookieSessionClient.JsonOptions))!;
+
+        var shopA = shops.Shops.Single(s => s.Code == "ShopA");
+        var whA1 = shopA.Warehouses.First();
+        var adminRole = roles.Single(r => r.Name == SystemRoles.Admin);
+        var operatorRole = roles.Single(r => r.Name == SystemRoles.Operator);
+
+        await RegisterAndApproveAsync(
+            superClient,
+            "wh.admin.shopa@packingproof.test",
+            [new GrantProposalDto(adminRole.Id, ScopeType.Shop, shopA.Id, null)],
+            shopA.Id,
+            whA1.Id);
+
+        using var shopAAdminClient = _fixture.CreateSessionClient();
+        await shopAAdminClient.LoginAsync("wh.admin.shopa@packingproof.test", "GovPass123!");
+
+        // 1. ShopA Admin sees only ShopA in /api/admin/warehouses/overview and cannot manage ShopB
+        var overviewRes = await shopAAdminClient.GetAsync("/api/admin/warehouses/overview");
+        Assert.Equal(HttpStatusCode.OK, overviewRes.StatusCode);
+        var overview = (await overviewRes.Content.ReadFromJsonAsync<AdminWarehousesOverviewDto>(CookieSessionClient.JsonOptions))!;
+        Assert.False(overview.CanManageShops);
+        Assert.Single(overview.Shops);
+        Assert.Equal(shopA.Id, overview.Shops[0].Id);
+
+        var forbiddenWhRes = await shopAAdminClient.PostJsonAsync(
+            $"/api/admin/warehouses/shops/{shopB.Id}",
+            new CreateAdminWarehouseRequest("WHB-BLOCKED", "Kho Bị Chặn", true));
+        Assert.Equal(HttpStatusCode.Forbidden, forbiddenWhRes.StatusCode);
+
+        // 2. ShopA Admin creates a new warehouse & packing station in ShopA, then pauses the extra station
+        var createWhRes = await shopAAdminClient.PostJsonAsync(
+            $"/api/admin/warehouses/shops/{shopA.Id}",
+            new CreateAdminWarehouseRequest("WHA-TB02", "Kho Tân Bình 02", true));
+        Assert.Equal(HttpStatusCode.Created, createWhRes.StatusCode);
+        var createdWh = (await createWhRes.Content.ReadFromJsonAsync<AdminWarehouseDetailDto>(CookieSessionClient.JsonOptions))!;
+        Assert.Equal("WHA-TB02", createdWh.Code);
+        Assert.Single(createdWh.PackingStations);
+
+        var createStRes = await shopAAdminClient.PostJsonAsync(
+            $"/api/admin/warehouses/{createdWh.Id}/stations",
+            new CreateAdminPackingStationRequest("ST-02", "Bàn đóng gói 02"));
+        Assert.Equal(HttpStatusCode.Created, createStRes.StatusCode);
+        var createdSt = (await createStRes.Content.ReadFromJsonAsync<AdminPackingStationDto>(CookieSessionClient.JsonOptions))!;
+
+        var pauseStRes = await shopAAdminClient.PutJsonAsync(
+            $"/api/admin/warehouses/stations/{createdSt.Id}",
+            new UpdateAdminPackingStationRequest("ST-02", "Bàn đóng gói 02 (Bảo trì)", false));
+        Assert.Equal(HttpStatusCode.OK, pauseStRes.StatusCode);
+
+        // Active /api/shops hides paused ST-02 while keeping ST-01 active
+        var activeShops = (await (await shopAAdminClient.GetAsync("/api/shops"))
+            .Content.ReadFromJsonAsync<AccessibleShopsResponse>(CookieSessionClient.JsonOptions))!;
+        var activeNewWh = activeShops.Shops.Single(s => s.Id == shopA.Id).Warehouses.Single(w => w.Id == createdWh.Id);
+        Assert.Single(activeNewWh.PackingStations);
+        Assert.Equal("ST-01", activeNewWh.PackingStations[0].Code);
+
+        // 3. ShopA Admin directly creates an Active staff account in ShopA without /register
+        var directUserRes = await shopAAdminClient.PostJsonAsync(
+            "/api/admin/users",
+            new CreateAdminUserRequest(
+                FullName: "Nhân Viên Kho Mới",
+                Email: "direct.staff.shopa@packingproof.test",
+                Password: "DirectPass#2026!",
+                Grants: [new GrantProposalDto(operatorRole.Id, ScopeType.Warehouse, shopA.Id, createdWh.Id)],
+                DefaultShopId: shopA.Id,
+                DefaultWarehouseId: createdWh.Id,
+                ForcePasswordReset: false));
+        Assert.Equal(HttpStatusCode.Created, directUserRes.StatusCode);
+        var directUser = (await directUserRes.Content.ReadFromJsonAsync<AdminUserSummaryDto>(CookieSessionClient.JsonOptions))!;
+        Assert.Equal(ApprovalStatus.Active, directUser.ApprovalStatus);
+
+        // 4. Direct staff logs in immediately, updates own profile, and changes own password
+        using var staffClient = _fixture.CreateSessionClient();
+        await staffClient.LoginAsync("direct.staff.shopa@packingproof.test", "DirectPass#2026!");
+
+        var updateOwnProfileRes = await staffClient.PutJsonAsync(
+            "/api/auth/profile",
+            new UpdateOwnProfileRequest("Nhân Viên Kho Đã Cập Nhật", shopA.Id, createdWh.Id));
+        Assert.Equal(HttpStatusCode.OK, updateOwnProfileRes.StatusCode);
+        var updatedMe = (await updateOwnProfileRes.Content.ReadFromJsonAsync<AuthMeResponse>(CookieSessionClient.JsonOptions))!;
+        Assert.Equal("Nhân Viên Kho Đã Cập Nhật", updatedMe.FullName);
+
+        var changePwRes = await staffClient.PostJsonAsync(
+            "/api/auth/change-password",
+            new ChangeOwnPasswordRequest("DirectPass#2026!", "NewSelfPass#2026!", "NewSelfPass#2026!"));
+        Assert.Equal(HttpStatusCode.OK, changePwRes.StatusCode);
+
+        // Verify login works with the newly changed password
+        using var staffReLoginClient = _fixture.CreateSessionClient();
+        await staffReLoginClient.LoginAsync("direct.staff.shopa@packingproof.test", "NewSelfPass#2026!");
+    }
+
     private async Task<Guid> RegisterAndApproveAsync(
         CookieSessionClient superClient,
         string email,

@@ -1,34 +1,51 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  Film,
+  Loader2,
+  RotateCcw,
+  Search
+} from 'lucide-react';
 import { useAuth } from '../../app/authStore';
 import {
-  formatByteSize,
   formatDurationSeconds,
   formatHoChiMinhDateTime,
-  getCaptureStatusBadge,
   getDeletionStatusBadge,
-  getSourceBadge,
-  getStorageStatusBadge,
-  type CaptureStatusType,
-  type RecordingSourceType,
-  type StorageStatusType
+  type CaptureStatusType
 } from '../../app/formatters';
 import { Permissions } from '../../app/types';
-import {
-  fetchAccessibleShops,
-  type ShopOption,
-  type WarehouseOption
-} from '../recording/recordingApi';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { PageHeader } from '../../components/ui/PageHeader';
 import {
   approveDeletionRequestApi,
   listDeletionRequestsApi,
   listVideosApi,
   rejectDeletionRequestApi,
   type DeletionRequestListItemDto,
-  type PagedVideosResponse
+  type PagedVideosResponse,
+  type VideoListItemDto
 } from './videosApi';
 
 type ActiveListTab = 'videos' | 'deletions';
+
+const VALID_CAPTURE_STATUSES: ReadonlyArray<CaptureStatusType> = [
+  'Captured',
+  'Interrupted',
+  'Recording',
+  'Created'
+];
+
+function isVideoFailed(item: VideoListItemDto): boolean {
+  return (
+    item.captureStatus !== 'Captured' ||
+    item.storageStatus === 'Failed'
+  );
+}
 
 export function VideoListPage() {
   const { hasPermission } = useAuth();
@@ -43,47 +60,30 @@ export function VideoListPage() {
       ? 'deletions'
       : 'videos';
 
-  const [activeTab, setActiveTab] = useState<ActiveListTab>(initialTab);
+  const initialCaptureParam = searchParams.get('captureStatus') ?? '';
+  const initialCaptureStatus: CaptureStatusType | '' =
+    VALID_CAPTURE_STATUSES.includes(initialCaptureParam as CaptureStatusType)
+      ? (initialCaptureParam as CaptureStatusType)
+      : '';
 
-  // Scope toggle: "Phạm vi được cấp" (false) vs "Video của tôi" (true)
-  const [mineOnly, setMineOnly] = useState<boolean>(
-    searchParams.get('mineOnly') === 'true'
-  );
+  const [activeTab, setActiveTab] = useState<ActiveListTab>(initialTab);
   const [trackingInput, setTrackingInput] = useState<string>(
     searchParams.get('trackingNumber') ?? ''
   );
-  const [exactMatch, setExactMatch] = useState<boolean>(
-    searchParams.get('exact') === 'true'
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatusType | ''>(
+    initialCaptureStatus
   );
-  const [selectedShopId, setSelectedShopId] = useState<string>(
-    searchParams.get('shopId') ?? ''
-  );
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>(
-    searchParams.get('warehouseId') ?? ''
-  );
-  const [captureStatus, setCaptureStatus] = useState<CaptureStatusType | ''>('');
-  const [storageStatus, setStorageStatus] = useState<StorageStatusType | ''>('');
-  const [holdFilter, setHoldFilter] = useState<'all' | 'hold' | 'no_hold'>('all');
-  const [sourceFilter, setSourceFilter] = useState<RecordingSourceType | ''>('');
-  const [fromDate, setFromDate] = useState<string>('');
-  const [toDate, setToDate] = useState<string>('');
   const [page, setPage] = useState<number>(1);
   const pageSize = 20;
 
-  // Committed query trigger so typing in tracking box waits for form submit / filter button
   const [appliedTracking, setAppliedTracking] = useState<string>(
     searchParams.get('trackingNumber') ?? ''
   );
-  const [appliedExact, setAppliedExact] = useState<boolean>(
-    searchParams.get('exact') === 'true'
-  );
 
-  const [shops, setShops] = useState<ShopOption[]>([]);
   const [videosData, setVideosData] = useState<PagedVideosResponse | null>(null);
   const [isLoadingVideos, setIsLoadingVideos] = useState<boolean>(true);
   const [videosError, setVideosError] = useState<string | null>(null);
 
-  // Deletion requests queue state (when user has video.delete.approve)
   const [deletionItems, setDeletionItems] = useState<DeletionRequestListItemDto[]>([]);
   const [deletionTotal, setDeletionTotal] = useState<number>(0);
   const [deletionStatusFilter, setDeletionStatusFilter] = useState<
@@ -93,45 +93,13 @@ export function VideoListPage() {
   const [deletionsError, setDeletionsError] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetchAccessibleShops();
-        if (active && Array.isArray(res?.shops)) {
-          setShops(res.shops);
-        }
-      } catch {
-        // Non-blocking: Shop filter stays optional if user only has Own scope
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const availableWarehouses: WarehouseOption[] = useMemo(() => {
-    const found = shops.find((s) => s.id === selectedShopId);
-    return found?.warehouses ?? [];
-  }, [selectedShopId, shops]);
-
   const loadVideos = useCallback(async () => {
     setIsLoadingVideos(true);
     setVideosError(null);
     try {
       const res = await listVideosApi({
         trackingNumber: appliedTracking,
-        exact: appliedExact,
-        shopId: selectedShopId || undefined,
-        warehouseId: selectedWarehouseId || undefined,
-        mineOnly,
         captureStatus,
-        storageStatus,
-        hold:
-          holdFilter === 'hold' ? true : holdFilter === 'no_hold' ? false : null,
-        source: sourceFilter,
-        fromDate: fromDate || undefined,
-        toDate: toDate || undefined,
         page,
         pageSize
       });
@@ -146,18 +114,9 @@ export function VideoListPage() {
       setIsLoadingVideos(false);
     }
   }, [
-    appliedExact,
     appliedTracking,
     captureStatus,
-    fromDate,
-    holdFilter,
-    mineOnly,
-    page,
-    selectedShopId,
-    selectedWarehouseId,
-    sourceFilter,
-    storageStatus,
-    toDate
+    page
   ]);
 
   const loadDeletionRequests = useCallback(async () => {
@@ -169,8 +128,6 @@ export function VideoListPage() {
     try {
       const res = await listDeletionRequestsApi({
         status: deletionStatusFilter,
-        shopId: selectedShopId || undefined,
-        warehouseId: selectedWarehouseId || undefined,
         page: 1,
         pageSize: 50
       });
@@ -187,9 +144,7 @@ export function VideoListPage() {
     }
   }, [
     canApproveDelete,
-    deletionStatusFilter,
-    selectedShopId,
-    selectedWarehouseId
+    deletionStatusFilter
   ]);
 
   useEffect(() => {
@@ -204,22 +159,12 @@ export function VideoListPage() {
     e.preventDefault();
     setPage(1);
     setAppliedTracking(trackingInput);
-    setAppliedExact(exactMatch);
   };
 
   const handleResetFilters = () => {
     setTrackingInput('');
-    setExactMatch(false);
     setAppliedTracking('');
-    setAppliedExact(false);
-    setSelectedShopId('');
-    setSelectedWarehouseId('');
     setCaptureStatus('');
-    setStorageStatus('');
-    setHoldFilter('all');
-    setSourceFilter('');
-    setFromDate('');
-    setToDate('');
     setPage(1);
     if (searchParams.size > 0) {
       setSearchParams({}, { replace: true });
@@ -235,7 +180,7 @@ export function VideoListPage() {
     try {
       await approveDeletionRequestApi(
         reqItem.id,
-        'Đã phê duyệt ẩn mềm (soft-delete) khỏi danh sách thư viện.'
+        'Đã phê duyệt ẩn video khỏi danh sách thư viện.'
       );
       await loadDeletionRequests();
     } catch (err) {
@@ -255,7 +200,7 @@ export function VideoListPage() {
     try {
       await rejectDeletionRequestApi(
         reqItem.id,
-        'Giữ lại video bằng chứng theo quyết định của quản trị viên.'
+        'Giữ lại video bằng chứng theo quyết định của quản lý.'
       );
       await loadDeletionRequests();
     } catch (err) {
@@ -270,351 +215,204 @@ export function VideoListPage() {
   };
 
   return (
-    <div>
-      <div className="surface-card">
-        <div className="page-header-row">
-          <div>
-            <h1 className="page-title">Thư viện video bằng chứng đóng gói</h1>
-            <p className="page-subtitle">
-              Tra cứu theo mã vận đơn (bảo toàn số <code>0</code> ở đầu), trạng thái ghi
-              hình, nơi lưu trữ và thời gian theo múi giờ <code>Asia/Ho_Chi_Minh</code>.
-            </p>
-          </div>
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+        <PageHeader
+          title="Thư viện video"
+          actions={
+            canRecordOrImport ? (
+              <Link
+                to="/record"
+                className="btn btn-primary inline-flex items-center gap-1.5"
+              >
+                <Camera className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Quay đơn mới</span>
+              </Link>
+            ) : undefined
+          }
+        />
 
-          {canRecordOrImport && (
-            <Link to="/record" className="btn btn-primary">
-              Quay đơn mới
-            </Link>
-          )}
-        </div>
-
-        <div
-          style={{
-            marginTop: 14,
-            display: 'flex',
-            justifyContent: 'space-between',
-            gap: 12,
-            flexWrap: 'wrap'
-          }}
-        >
-          <div className="segmented-tabs" role="tablist" aria-label="Phạm vi hiển thị">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'videos' && !mineOnly}
-              className={`segmented-tab${
-                activeTab === 'videos' && !mineOnly ? ' active' : ''
-              }`}
-              onClick={() => {
-                setActiveTab('videos');
-                setMineOnly(false);
-                setPage(1);
-              }}
-            >
-              Phạm vi được cấp
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'videos' && mineOnly}
-              className={`segmented-tab${
-                activeTab === 'videos' && mineOnly ? ' active' : ''
-              }`}
-              onClick={() => {
-                setActiveTab('videos');
-                setMineOnly(true);
-                setPage(1);
-              }}
-            >
-              Video của tôi
-            </button>
-            {canApproveDelete && (
+        {canApproveDelete && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="segmented-tabs" role="tablist" aria-label="Phạm vi hiển thị">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'videos'}
+                className={`segmented-tab cursor-pointer ${
+                  activeTab === 'videos' ? 'active' : ''
+                }`}
+                onClick={() => {
+                  setActiveTab('videos');
+                  setPage(1);
+                }}
+              >
+                Danh sách video
+              </button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeTab === 'deletions'}
-                className={`segmented-tab${
-                  activeTab === 'deletions' ? ' active' : ''
+                className={`segmented-tab cursor-pointer ${
+                  activeTab === 'deletions' ? 'active' : ''
                 }`}
                 onClick={() => setActiveTab('deletions')}
               >
                 Duyệt yêu cầu xóa
               </button>
-            )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {activeTab === 'videos' && (
         <>
-          <form className="surface-card" onSubmit={handleSearchSubmit}>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr',
-                gap: 12,
-                marginBottom: 14
-              }}
-            >
-              <div>
-                <label htmlFor="video-search-tracking" className="form-label">
-                  Tìm theo mã vận đơn hoặc mã đơn TikTok (giữ nguyên số 0 ở đầu)
-                </label>
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 10,
-                    flexWrap: 'wrap',
-                    alignItems: 'center'
-                  }}
-                >
+          {/* Search & Quick Filter Card */}
+          <form
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5"
+            onSubmit={handleSearchSubmit}
+          >
+            <div>
+              <label
+                htmlFor="video-search-tracking"
+                className="mb-1.5 block text-xs font-bold tracking-wide text-slate-700 uppercase"
+              >
+                Tìm theo mã vận đơn
+              </label>
+              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                <div className="relative flex-1">
+                  <Search
+                    className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
                   <input
                     id="video-search-tracking"
                     type="text"
-                    className="form-input"
-                    style={{ flex: '1 1 260px' }}
+                    className="form-input pl-10 font-mono text-base sm:text-sm"
                     value={trackingInput}
                     onChange={(e) => setTrackingInput(e.target.value)}
-                    placeholder="Ví dụ: 0012345678 hoặc SPXVN048192"
+                    placeholder="Nhập mã vận đơn cần tra cứu..."
                     autoComplete="off"
                   />
-                  <label className="checkbox-inline-row">
-                    <input
-                      type="checkbox"
-                      checked={exactMatch}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setExactMatch(checked);
-                        setAppliedExact(checked);
-                        setPage(1);
-                      }}
-                    />
-                    <span>Khớp chính xác mã vận đơn</span>
-                  </label>
-                  <button type="submit" className="btn btn-primary">
-                    Tìm kiếm
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    className="btn btn-primary inline-flex flex-1 items-center justify-center gap-1.5 sm:flex-initial"
+                  >
+                    <Search className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>Tìm kiếm</span>
                   </button>
                   <button
                     type="button"
-                    className="btn btn-outline"
+                    className="btn btn-outline inline-flex items-center justify-center gap-1.5"
                     onClick={handleResetFilters}
                   >
-                    Xóa bộ lọc
+                    <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span>Xóa lọc</span>
                   </button>
                 </div>
               </div>
             </div>
 
-            <div className="filter-grid">
-              <div>
-                <label htmlFor="filter-shop" className="form-label">
-                  Shop
-                </label>
-                <select
-                  id="filter-shop"
-                  className="form-input"
-                  value={selectedShopId}
-                  onChange={(e) => {
-                    setSelectedShopId(e.target.value);
-                    setSelectedWarehouseId('');
-                    setPage(1);
-                  }}
-                >
-                  <option value="">Tất cả Shop trong phạm vi</option>
-                  {shops.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="filter-warehouse" className="form-label">
-                  Kho đóng gói
-                </label>
-                <select
-                  id="filter-warehouse"
-                  className="form-input"
-                  value={selectedWarehouseId}
-                  disabled={!selectedShopId || availableWarehouses.length === 0}
-                  onChange={(e) => {
-                    setSelectedWarehouseId(e.target.value);
-                    setPage(1);
-                  }}
-                >
-                  <option value="">Tất cả Kho</option>
-                  {availableWarehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} ({w.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="filter-from-date" className="form-label">
-                  Từ ngày (GMT+7)
-                </label>
-                <input
-                  id="filter-from-date"
-                  type="date"
-                  className="form-input"
-                  value={fromDate}
-                  onChange={(e) => {
-                    setFromDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="filter-to-date" className="form-label">
-                  Đến ngày (GMT+7)
-                </label>
-                <input
-                  id="filter-to-date"
-                  type="date"
-                  className="form-input"
-                  value={toDate}
-                  onChange={(e) => {
-                    setToDate(e.target.value);
-                    setPage(1);
-                  }}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="filter-capture-status" className="form-label">
-                  Trạng thái ghi hình
-                </label>
-                <select
-                  id="filter-capture-status"
-                  className="form-input"
-                  value={captureStatus}
-                  onChange={(e) => {
-                    setCaptureStatus(e.target.value as CaptureStatusType | '');
-                    setPage(1);
-                  }}
-                >
-                  <option value="">Tất cả trạng thái quay</option>
-                  <option value="Captured">Hoàn chỉnh</option>
-                  <option value="Interrupted">Bị gián đoạn</option>
-                  <option value="Recording">Đang quay</option>
-                  <option value="Created">Mới tạo phiên</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="filter-storage-status" className="form-label">
-                  Trạng thái lưu trữ
-                </label>
-                <select
-                  id="filter-storage-status"
-                  className="form-input"
-                  value={storageStatus}
-                  onChange={(e) => {
-                    setStorageStatus(e.target.value as StorageStatusType | '');
-                    setPage(1);
-                  }}
-                >
-                  <option value="">Tất cả trạng thái lưu trữ</option>
-                  <option value="Stored">Đã lưu hoàn tất</option>
-                  <option value="AwaitingUpload">Chờ tải lên</option>
-                  <option value="Uploading">Đang tải lên</option>
-                  <option value="Validating">Đang kiểm tra tệp</option>
-                  <option value="WaitingForStorage">Chờ kết nối lưu trữ</option>
-                  <option value="Failed">Lỗi lưu trữ</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="filter-hold" className="form-label">
-                  Chế độ giữ bằng chứng (Hold)
-                </label>
-                <select
-                  id="filter-hold"
-                  className="form-input"
-                  value={holdFilter}
-                  onChange={(e) => {
-                    setHoldFilter(e.target.value as 'all' | 'hold' | 'no_hold');
-                    setPage(1);
-                  }}
-                >
-                  <option value="all">Tất cả</option>
-                  <option value="hold">Đang giữ (Hold)</option>
-                  <option value="no_hold">Không giữ</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="filter-source" className="form-label">
-                  Nguồn tạo video
-                </label>
-                <select
-                  id="filter-source"
-                  className="form-input"
-                  value={sourceFilter}
-                  onChange={(e) => {
-                    setSourceFilter(e.target.value as RecordingSourceType | '');
-                    setPage(1);
-                  }}
-                >
-                  <option value="">Tất cả nguồn</option>
-                  <option value="RecordedInBrowser">
-                    Quay trực tiếp trên trình duyệt
-                  </option>
-                  <option value="Imported">Tải tệp có sẵn (Imported)</option>
-                </select>
-              </div>
+            {/* 1-Tap Quick Filter Pills */}
+            <div className="mt-3.5 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:pb-0">
+              <span className="shrink-0 text-xs font-semibold text-slate-500">
+                Trạng thái:
+              </span>
+              <button
+                type="button"
+                className={`inline-flex min-h-10 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                  captureStatus === ''
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
+                onClick={() => {
+                  setCaptureStatus('');
+                  setPage(1);
+                }}
+              >
+                Tất cả
+              </button>
+              <button
+                type="button"
+                className={`inline-flex min-h-10 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                  captureStatus === 'Captured'
+                    ? 'border-emerald-600 bg-emerald-600 text-white'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
+                onClick={() => {
+                  setCaptureStatus('Captured');
+                  setPage(1);
+                }}
+              >
+                Thành công
+              </button>
+              <button
+                type="button"
+                className={`inline-flex min-h-10 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                  captureStatus === 'Interrupted'
+                    ? 'border-red-600 bg-red-600 text-white'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
+                onClick={() => {
+                  setCaptureStatus('Interrupted');
+                  setPage(1);
+                }}
+              >
+                Thất bại
+              </button>
             </div>
           </form>
 
           {videosError && (
-            <div className="alert alert-error" role="alert">
-              {videosError}
+            <div
+              className="flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+              <span>{videosError}</span>
             </div>
           )}
 
-          <div className="surface-card">
+          {/* Results Card */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
             {isLoadingVideos ? (
-              <div role="status" style={{ color: 'var(--color-text-muted)' }}>
-                Đang tải danh sách video bằng chứng...
+              <div
+                className="flex items-center justify-center gap-2.5 py-8 text-sm font-medium text-slate-600"
+                role="status"
+              >
+                <Loader2 className="h-5 w-5 animate-spin text-blue-600" aria-hidden="true" />
+                <span>Đang tải danh sách video bằng chứng...</span>
               </div>
             ) : !videosData || videosData.items.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '20px 8px' }}>
-                <p
-                  style={{
-                    margin: '0 0 8px',
-                    fontWeight: 600,
-                    color: 'var(--color-navy)'
-                  }}
-                >
-                  Không tìm thấy video phù hợp với điều kiện lọc hiện tại.
-                </p>
-                <p
-                  style={{
-                    margin: 0,
-                    fontSize: '0.88rem',
-                    color: 'var(--color-text-muted)'
-                  }}
-                >
-                  Kiểm tra lại mã vận đơn (bao gồm các chữ số 0 ở đầu) hoặc phạm vi ngày
-                  lọc.
-                </p>
-              </div>
+              <EmptyState
+                icon={<Film className="h-6 w-6" />}
+                title="Không tìm thấy video phù hợp"
+                description="Hãy kiểm tra lại mã vận đơn (bao gồm cả số 0 ở đầu) hoặc bấm Xóa lọc để xem toàn bộ danh sách."
+                action={
+                  <button
+                    type="button"
+                    className="btn btn-outline inline-flex items-center gap-1.5"
+                    onClick={handleResetFilters}
+                  >
+                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                    <span>Xóa bộ lọc</span>
+                  </button>
+                }
+              />
             ) : (
               <>
-                <div
-                  style={{
-                    marginBottom: 12,
-                    fontSize: '0.88rem',
-                    color: 'var(--color-text-muted)'
-                  }}
-                >
-                  Tìm thấy <strong>{videosData.totalCount}</strong> bản ghi video • Trang{' '}
-                  <strong>{videosData.page}</strong> /{' '}
-                  <strong>{Math.max(1, videosData.totalPages)}</strong>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                  <span>
+                    Tìm thấy <strong className="text-slate-900">{videosData.totalCount}</strong>{' '}
+                    video • Trang <strong className="text-slate-900">{videosData.page}</strong> /{' '}
+                    <strong className="text-slate-900">
+                      {Math.max(1, videosData.totalPages)}
+                    </strong>
+                  </span>
                 </div>
 
                 {/* Desktop Table */}
@@ -625,132 +423,61 @@ export function VideoListPage() {
                         <th>Mã vận đơn</th>
                         <th>Shop / Kho</th>
                         <th>Nhân viên</th>
-                        <th>Trạng thái &amp; Nguồn</th>
-                        <th>Thời lượng / Dung lượng</th>
-                        <th>Thời gian (GMT+7)</th>
-                        <th>Thao tác</th>
+                        <th>Trạng thái</th>
+                        <th>Thời lượng</th>
+                        <th>Thời gian</th>
+                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
                       {videosData.items.map((item) => {
-                        const capBadge = getCaptureStatusBadge(item.captureStatus);
-                        const stoBadge = getStorageStatusBadge(
-                          item.storageStatus,
-                          item.storageMode
-                        );
-                        const srcBadge = getSourceBadge(item.source);
+                        const failed = isVideoFailed(item);
 
                         return (
                           <tr key={item.id}>
                             <td>
-                              <div className="mono-code">{item.trackingNumber}</div>
-                              <div
-                                style={{
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-text-muted)',
-                                  marginTop: 2
-                                }}
-                              >
-                                {item.carrierCode ? `ĐVVC: ${item.carrierCode}` : ''}
-                                {item.carrierCode && item.tikTokOrderId ? ' • ' : ''}
-                                {item.tikTokOrderId
-                                  ? `Đơn TikTok: ${item.tikTokOrderId}`
-                                  : ''}
+                              <div className="mono-code text-slate-950">
+                                {item.trackingNumber}
                               </div>
-                              {item.isManualCode && (
-                                <span
-                                  className="status-pill status-pill-muted"
-                                  style={{ marginTop: 4, fontSize: '0.75rem' }}
-                                >
-                                  Nhập mã thủ công
-                                </span>
-                              )}
                             </td>
                             <td>
-                              <strong>{item.shopName}</strong>
-                              <div
-                                style={{
-                                  fontSize: '0.82rem',
-                                  color: 'var(--color-text-muted)'
-                                }}
-                              >
+                              <div className="font-semibold text-slate-900">
+                                {item.shopName}
+                              </div>
+                              <div className="text-xs text-slate-500">
                                 {item.warehouseName}
                               </div>
                             </td>
                             <td>
-                              <div>{item.ownerFullName}</div>
-                              <div
-                                style={{
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-text-muted)'
-                                }}
+                              <div className="font-medium text-slate-800">
+                                {item.ownerFullName}
+                              </div>
+                            </td>
+                            <td>
+                              <span
+                                className={
+                                  failed
+                                    ? 'status-pill status-pill-interrupted'
+                                    : 'status-pill status-pill-completed'
+                                }
                               >
-                                {item.ownerEmail}
+                                {failed ? 'Thất bại' : 'Thành công'}
+                              </span>
+                            </td>
+                            <td>
+                              <div className="font-mono text-xs font-semibold text-slate-800">
+                                {formatDurationSeconds(item.durationSeconds)}
                               </div>
                             </td>
                             <td>
-                              <div className="badge-cluster">
-                                <span className={capBadge.className}>
-                                  {capBadge.label}
-                                </span>
-                                <span className={stoBadge.className}>
-                                  {stoBadge.label}
-                                </span>
-                                <span className={srcBadge.className}>
-                                  {srcBadge.shortLabel}
-                                </span>
-                                {item.hold && (
-                                  <span className="status-pill status-pill-hold">
-                                    Đang giữ (Hold)
-                                  </span>
-                                )}
-                                {item.hasPendingDeletionRequest && (
-                                  <span className="status-pill status-pill-starting">
-                                    Chờ duyệt xóa
-                                  </span>
-                                )}
-                              </div>
-                              {item.noteCount > 0 && (
-                                <div
-                                  style={{
-                                    marginTop: 4,
-                                    fontSize: '0.78rem',
-                                    color: 'var(--color-text-muted)'
-                                  }}
-                                >
-                                  {item.noteCount} ghi chú nội bộ
-                                </div>
-                              )}
-                            </td>
-                            <td>
-                              <div>{formatDurationSeconds(item.durationSeconds)}</div>
-                              <div
-                                style={{
-                                  fontSize: '0.8rem',
-                                  color: 'var(--color-text-muted)'
-                                }}
-                              >
-                                {formatByteSize(item.originalSizeBytes)}
+                              <div className="text-xs text-slate-700">
+                                {formatHoChiMinhDateTime(item.createdAtUtc)}
                               </div>
                             </td>
-                            <td>
-                              <div>{formatHoChiMinhDateTime(item.createdAtUtc)}</div>
-                              {item.storedAtUtc && (
-                                <div
-                                  style={{
-                                    fontSize: '0.78rem',
-                                    color: 'var(--color-text-muted)'
-                                  }}
-                                >
-                                  Lưu lúc: {formatHoChiMinhDateTime(item.storedAtUtc)}
-                                </div>
-                              )}
-                            </td>
-                            <td>
+                            <td className="text-right">
                               <Link
                                 to={`/videos/${item.id}`}
-                                className="btn btn-navy"
-                                style={{ padding: '8px 14px' }}
+                                className="btn btn-navy px-3.5 py-2 text-xs"
                               >
                                 Xem chi tiết
                               </Link>
@@ -765,66 +492,38 @@ export function VideoListPage() {
                 {/* Mobile Cards */}
                 <div className="mobile-card-list mobile-card-list-hide-desktop">
                   {videosData.items.map((item) => {
-                    const capBadge = getCaptureStatusBadge(item.captureStatus);
-                    const stoBadge = getStorageStatusBadge(
-                      item.storageStatus,
-                      item.storageMode
-                    );
-                    const srcBadge = getSourceBadge(item.source);
+                    const failed = isVideoFailed(item);
 
                     return (
                       <div key={item.id} className="mobile-data-card">
-                        <div className="page-header-row">
-                          <div>
-                            <div
-                              className="mono-code"
-                              style={{ fontSize: '1.08rem', color: 'var(--color-navy)' }}
-                            >
-                              {item.trackingNumber}
-                            </div>
-                            <div
-                              style={{
-                                fontSize: '0.82rem',
-                                color: 'var(--color-text-muted)'
-                              }}
-                            >
-                              {item.shopName} • {item.warehouseName}
-                            </div>
+                        <div className="flex items-center justify-between gap-2.5">
+                          <div className="mono-code text-base text-slate-950">
+                            {item.trackingNumber}
                           </div>
-                          <Link to={`/videos/${item.id}`} className="btn btn-navy">
+                          <span
+                            className={
+                              failed
+                                ? 'status-pill status-pill-interrupted'
+                                : 'status-pill status-pill-completed'
+                            }
+                          >
+                            {failed ? 'Thất bại' : 'Thành công'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-500">
+                          <span>
+                            {formatHoChiMinhDateTime(item.createdAtUtc)} •{' '}
+                            <strong className="font-mono text-slate-700">
+                              {formatDurationSeconds(item.durationSeconds)}
+                            </strong>
+                          </span>
+                          <Link
+                            to={`/videos/${item.id}`}
+                            className="btn btn-navy shrink-0 px-3 py-1.5 text-xs"
+                          >
                             Xem chi tiết
                           </Link>
-                        </div>
-
-                        <div className="badge-cluster">
-                          <span className={capBadge.className}>{capBadge.label}</span>
-                          <span className={stoBadge.className}>{stoBadge.label}</span>
-                          <span className={srcBadge.className}>
-                            {srcBadge.shortLabel}
-                          </span>
-                          {item.hold && (
-                            <span className="status-pill status-pill-hold">
-                              Đang giữ (Hold)
-                            </span>
-                          )}
-                        </div>
-
-                        <div
-                          style={{
-                            fontSize: '0.84rem',
-                            color: 'var(--color-text-muted)',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            gap: 8,
-                            flexWrap: 'wrap'
-                          }}
-                        >
-                          <span>NV: {item.ownerFullName}</span>
-                          <span>
-                            {formatDurationSeconds(item.durationSeconds)} •{' '}
-                            {formatByteSize(item.originalSizeBytes)}
-                          </span>
-                          <span>{formatHoChiMinhDateTime(item.createdAtUtc)}</span>
                         </div>
                       </div>
                     );
@@ -832,27 +531,29 @@ export function VideoListPage() {
                 </div>
 
                 {videosData.totalPages > 1 && (
-                  <div className="pagination-bar">
+                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3.5">
                     <button
                       type="button"
-                      className="btn btn-outline"
+                      className="btn btn-outline inline-flex items-center gap-1 text-xs"
                       disabled={videosData.page <= 1 || isLoadingVideos}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                     >
-                      Trang trước
+                      <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                      <span>Trang trước</span>
                     </button>
-                    <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>
+                    <span className="text-xs font-semibold text-slate-700">
                       Trang {videosData.page} / {videosData.totalPages}
                     </span>
                     <button
                       type="button"
-                      className="btn btn-outline"
+                      className="btn btn-outline inline-flex items-center gap-1 text-xs"
                       disabled={
                         videosData.page >= videosData.totalPages || isLoadingVideos
                       }
                       onClick={() => setPage((p) => p + 1)}
                     >
-                      Trang sau
+                      <span>Trang sau</span>
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
                     </button>
                   </div>
                 )}
@@ -862,23 +563,26 @@ export function VideoListPage() {
         </>
       )}
 
+      {/* Deletion Requests Approval Tab */}
       {activeTab === 'deletions' && canApproveDelete && (
-        <div className="surface-card">
-          <div className="page-header-row" style={{ marginBottom: 14 }}>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 style={{ margin: 0, fontSize: '1.1rem' }}>
+              <h2 className="m-0 text-base font-bold text-slate-900">
                 Danh sách yêu cầu xóa video ({deletionTotal})
               </h2>
-              <p className="page-subtitle">
-                Khi phê duyệt, video sẽ được ẩn mềm (soft-delete) khỏi danh sách tra cứu
-                thông thường và ghi nhận vào nhật ký kiểm toán. Video đang ở trạng thái{' '}
-                <strong>Hold</strong> sẽ bị chặn phê duyệt xóa.
+              <p className="mt-0.5 mb-0 text-xs text-slate-600">
+                Khi phê duyệt, video sẽ được ẩn khỏi danh sách tra cứu. Video đang bật{' '}
+                <strong>Giữ bằng chứng (Hold)</strong> không thể xóa.
               </p>
             </div>
 
-            <div>
-              <label htmlFor="deletion-status-filter" className="form-label">
-                Lọc trạng thái
+            <div className="min-w-44">
+              <label
+                htmlFor="deletion-status-filter"
+                className="mb-1 block text-xs font-semibold text-slate-700"
+              >
+                Trạng thái yêu cầu
               </label>
               <select
                 id="deletion-status-filter"
@@ -899,37 +603,45 @@ export function VideoListPage() {
           </div>
 
           {deletionsError && (
-            <div className="alert alert-error" role="alert">
-              {deletionsError}
+            <div
+              className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-3.5 text-sm text-red-900"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" aria-hidden="true" />
+              <span>{deletionsError}</span>
             </div>
           )}
 
           {isLoadingDeletions ? (
-            <div role="status" style={{ color: 'var(--color-text-muted)' }}>
-              Đang tải danh sách yêu cầu xóa...
+            <div
+              className="flex items-center justify-center gap-2 py-8 text-sm text-slate-600"
+              role="status"
+            >
+              <Loader2 className="h-5 w-5 animate-spin text-blue-600" aria-hidden="true" />
+              <span>Đang tải danh sách yêu cầu xóa...</span>
             </div>
           ) : deletionItems.length === 0 ? (
-            <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-              Không có yêu cầu xóa video nào ở trạng thái đã chọn.
-            </p>
+            <EmptyState
+              icon={<Film className="h-6 w-6" />}
+              title="Không có yêu cầu xóa video nào"
+              description="Hiện không có yêu cầu xóa nào ở trạng thái bạn đang chọn."
+            />
           ) : (
-            <div className="mobile-card-list">
+            <div className="space-y-3">
               {deletionItems.map((req) => {
                 const statusBadge = getDeletionStatusBadge(req.status);
                 return (
-                  <div key={req.id} className="mobile-data-card">
-                    <div className="page-header-row">
+                  <div
+                    key={req.id}
+                    className="rounded-xl border border-slate-200 bg-slate-50/50 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2.5">
                       <div>
-                        <span className="mono-code" style={{ fontSize: '1.05rem' }}>
+                        <span className="mono-code text-base text-slate-950">
                           {req.trackingNumber}
                         </span>
-                        <div
-                          style={{
-                            fontSize: '0.84rem',
-                            color: 'var(--color-text-muted)'
-                          }}
-                        >
-                          {req.shopName} • {req.warehouseName} • Người yêu cầu:{' '}
+                        <div className="mt-0.5 text-xs text-slate-600">
+                          {req.shopName} • {req.warehouseName} • Người gửi:{' '}
                           <strong>{req.requestedByFullName}</strong> (
                           {req.requestedByEmail})
                         </div>
@@ -947,37 +659,38 @@ export function VideoListPage() {
                       </div>
                     </div>
 
-                    <div style={{ fontSize: '0.9rem' }}>
+                    <div className="mt-2.5 text-sm text-slate-800">
                       <strong>Lý do yêu cầu xóa:</strong> {req.reason}
                     </div>
 
-                    <div
-                      style={{
-                        fontSize: '0.82rem',
-                        color: 'var(--color-text-muted)'
-                      }}
-                    >
+                    <div className="mt-1 text-xs text-slate-500">
                       Gửi lúc: {formatHoChiMinhDateTime(req.createdAtUtc)}
                       {req.reviewedAtUtc
-                        ? ` • Duyệt lúc: ${formatHoChiMinhDateTime(req.reviewedAtUtc)} bởi ${req.reviewedByFullName ?? req.reviewedByEmail ?? ''}`
+                        ? ` • Xử lý lúc: ${formatHoChiMinhDateTime(req.reviewedAtUtc)} bởi ${req.reviewedByFullName ?? req.reviewedByEmail ?? ''}`
                         : ''}
                     </div>
 
                     {req.recordingHold && req.status === 'Pending' && (
-                      <div className="alert alert-warning" style={{ marginBottom: 0 }}>
-                        Video này đang bật <strong>Giữ bằng chứng (Hold)</strong>
-                        {req.recordingHoldReason
-                          ? ` (${req.recordingHoldReason})`
-                          : ''}
-                        . Không thể phê duyệt xóa khi video đang được giữ.
+                      <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+                        <AlertTriangle
+                          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
+                          aria-hidden="true"
+                        />
+                        <span>
+                          Video này đang bật <strong>Giữ bằng chứng (Hold)</strong>
+                          {req.recordingHoldReason
+                            ? ` (${req.recordingHoldReason})`
+                            : ''}
+                          . Không thể phê duyệt xóa khi video đang được giữ.
+                        </span>
                       </div>
                     )}
 
-                    <div className="quick-actions-row" style={{ marginTop: 4 }}>
+                    <div className="mt-3 flex flex-wrap gap-2">
                       {!req.recordingIsSoftDeleted && (
                         <Link
                           to={`/videos/${req.recordingId}`}
-                          className="btn btn-outline"
+                          className="btn btn-outline text-xs"
                         >
                           Mở chi tiết video
                         </Link>
@@ -986,15 +699,15 @@ export function VideoListPage() {
                         <>
                           <button
                             type="button"
-                            className="btn btn-danger"
+                            className="btn btn-danger text-xs"
                             disabled={req.recordingHold || reviewingId === req.id}
                             onClick={() => void handleQuickApproveDeletion(req)}
                           >
-                            Phê duyệt xóa mềm
+                            Phê duyệt xóa
                           </button>
                           <button
                             type="button"
-                            className="btn btn-outline"
+                            className="btn btn-outline text-xs"
                             disabled={reviewingId === req.id}
                             onClick={() => void handleQuickRejectDeletion(req)}
                           >
